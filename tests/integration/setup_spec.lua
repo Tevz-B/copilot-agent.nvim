@@ -2440,11 +2440,12 @@ describe('model state sync', function()
     })
 
     assert_eq('gpt-5.5', agent.state.current_model)
-    assert_eq('gpt-5.5', agent.state.config.session.model)
+    assert_eq('claude-sonnet-4.6', agent.state.config.session.model)
     assert_eq(nil, agent.state.reasoning_effort)
   end)
 
   it('syncs attached session model state from host events', function()
+    agent.state.config.session.model = 'claude-sonnet-4.6'
     events.handle_host_event('host.session_attached', {
       data = {
         sessionId = 'session-123',
@@ -2459,7 +2460,7 @@ describe('model state sync', function()
     })
 
     assert_eq('claude-opus-4.7', agent.state.current_model)
-    assert_eq('claude-opus-4.7', agent.state.config.session.model)
+    assert_eq('claude-sonnet-4.6', agent.state.config.session.model)
     assert_eq('medium', agent.state.reasoning_effort)
     assert_eq('Attached session', agent.state.session_name)
     assert_eq(2, agent.state.instruction_count)
@@ -2469,6 +2470,7 @@ describe('model state sync', function()
   end)
 
   it('syncs model and reasoning effort from session events', function()
+    agent.state.config.session.model = 'claude-sonnet-4.6'
     events.handle_session_event({
       type = 'session.model_change',
       data = {
@@ -2478,8 +2480,28 @@ describe('model state sync', function()
     })
 
     assert_eq('claude-opus-4.7', agent.state.current_model)
-    assert_eq('claude-opus-4.7', agent.state.config.session.model)
+    assert_eq('claude-sonnet-4.6', agent.state.config.session.model)
     assert_eq('medium', agent.state.reasoning_effort)
+  end)
+
+  it('does not overwrite the selected session model from usage info', function()
+    agent.state.session_id = 'session-123'
+    agent.state.current_model = 'gpt-5.3-codex'
+    agent.state.session_models['copilot::session-123'] = 'gpt-5.3-codex'
+    agent.state.config.session.model = 'gpt-5.4-mini'
+
+    events.handle_session_event({
+      type = 'session.usage_info',
+      data = {
+        model = 'gpt-5.4-mini',
+        currentTokens = 123,
+        tokenLimit = 456,
+      },
+    })
+
+    assert_eq('gpt-5.3-codex', agent.state.current_model)
+    assert_eq('gpt-5.3-codex', agent.state.session_models['copilot::session-123'])
+    assert_eq('gpt-5.3-codex', require('copilot_agent.config').active_session_model('session-123'))
   end)
 
   it('tracks assistant usage metrics and appends quota remaining to the statusline context', function()
@@ -4268,7 +4290,8 @@ describe('model picker', function()
 
     assert_eq(1, #prompts)
     assert_eq('Select Copilot model', prompts[1])
-    assert_eq('gpt-5.4', require('copilot_agent.config').state.config.session.model)
+    assert_eq('gpt-5.4', require('copilot_agent.config').state.pending_session_model)
+    assert_eq('gpt-5.4', require('copilot_agent.config').active_session_model(nil))
   end)
 
   it('opens the reasoning effort picker when the model picker returns a formatted string', function()

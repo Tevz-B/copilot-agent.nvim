@@ -191,6 +191,12 @@ function M.setup(opts)
   state.reasoning_text = ''
   state.reasoning_lines = {}
   state.last_assistant_usage = nil
+  state.current_model = nil
+  state.pending_session_model = nil
+  state.active_provider = nil
+  state.provider_cache = {}
+  state.provider_sessions = {}
+  state.session_models = {}
   state.dashboard_winid = nil
   state.dashboard_prompt_bufnr = nil
   state.dashboard_prompt_winid = nil

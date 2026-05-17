@@ -41,6 +41,68 @@ local unavailable_model_from_error = utils.unavailable_model_from_error
 
 local M = {}
 local create_session
+local PROVIDER_HANDOFF_MAX_ENTRIES = 8
+local PROVIDER_HANDOFF_MAX_CHARS = 240
+
+local function current_provider()
+  return type(active_provider) == 'function' and active_provider() or 'copilot'
+end
+
+local function requested_model_for_session(session_id, provider, override)
+  local requested = type(override) == 'string' and vim.trim(override) or ''
+  if requested ~= '' then
+    return requested
+  end
+
+  local session_model = cfg.active_session_model(session_id, provider)
+  if type(session_model) == 'string' and session_model ~= '' then
+    return session_model
+  end
+
+  return nil
+end
+
+local function set_active_provider(provider)
+  local normalized = provider_key(provider)
+  if normalized then
+    if state.active_provider ~= normalized then
+      state.active_provider = normalized
+      refresh_statuslines()
+    end
+  end
+  return current_provider()
+end
+
+local function session_provider_for(session_id, fallback_provider)
+  return type(session_provider) == 'function' and session_provider(session_id, fallback_provider) or current_provider()
+end
+
+local function remember_session_provider(session_id, provider)
+  local resolved_provider = set_active_provider(provider)
+  if type(bind_session_provider) == 'function' then
+    bind_session_provider(session_id, resolved_provider)
+  end
+  return resolved_provider
+end
+
+local function cache_session_model(session_id, provider, model_name)
+  if type(session_id) ~= 'string' or session_id == '' then
+    return
+  end
+  if type(model_name) ~= 'string' or model_name == '' then
+    return
+  end
+  local key = session_model_key(session_id, session_provider_for(session_id, provider))
+  if key then
+    state.session_models[key] = model_name
+  end
+end
+
+local function with_provider_opts(opts, provider)
+  local next_opts = vim.tbl_extend('force', {}, opts or {})
+  next_opts.provider = provider or current_provider()
+  return next_opts
+end
 
 local function formatted_session_summary(summary)
   return truncate_session_summary(summary, 32)
@@ -375,7 +437,8 @@ end
 function M.resume_session(session_id, callback, opts)
   opts = opts or {}
   local requested_wd = working_directory()
-  log(string.format('resume_session request id=%s cwd=%s', format_session_id(session_id), requested_wd), vim.log.levels.DEBUG)
+  local requested_model = requested_model_for_session(session_id, provider, opts.model)
+  log(string.format('resume_session request id=%s provider=%s cwd=%s', format_session_id(session_id), tostring(provider), requested_wd), vim.log.levels.DEBUG)
   local request_fn = opts.strict_discovery == true and request_with_managed_base_url or request
   request_fn('POST', '/sessions', {
     sessionId = session_id,
@@ -386,7 +449,7 @@ function M.resume_session(session_id, callback, opts)
     workingDirectory = requested_wd,
     streaming = state.config.session.streaming,
     enableConfigDiscovery = state.config.session.enable_config_discovery,
-    model = cfg.active_session_model(session_id) or state.config.session.model,
+    model = requested_model,
     agent = state.config.session.agent,
   }, function(response, err)
     state.startup_session_discovery = false
@@ -433,6 +496,7 @@ function M.resume_session(session_id, callback, opts)
       state.session_models[resumed_session_id] = response.model
       state.current_model = response.model
     end
+    state.pending_session_model = nil
 
     -- Ensure an initial checkpoint exists for the session so diffs have a baseline.
     -- Create or initialize checkpoint repo asynchronously but don't block resume.
@@ -775,11 +839,12 @@ end
 create_session = function(callback, opts)
   opts = opts or {}
   local requested_wd = working_directory()
+  local requested_model = requested_model_for_session(opts.session_id, provider, opts.model)
   log(
     string.format(
       'create_session request cwd=%s model=%s agent=%s permission=%s',
       requested_wd,
-      tostring(state.config.session.model or '<default>'),
+      tostring(requested_model or '<default>'),
       tostring(state.config.session.agent or '<default>'),
       tostring(state.permission_mode or state.config.permission_mode)
     ),
@@ -794,7 +859,7 @@ create_session = function(callback, opts)
     workingDirectory = requested_wd,
     streaming = state.config.session.streaming,
     enableConfigDiscovery = state.config.session.enable_config_discovery,
-    model = cfg.active_session_model(opts.session_id) or state.config.session.model,
+    model = requested_model,
     agent = state.config.session.agent,
   }, function(response, err)
     state.startup_session_discovery = false
@@ -825,7 +890,7 @@ create_session = function(callback, opts)
         on_session_ready(nil, err)
         return
       end
-      if um and state.config.session.model == um and opts.model_selection_attempts ~= false then
+      if um and requested_model == um and opts.model_selection_attempts ~= false then
         append_entry('system', string.format('Model "%s" is unavailable; choose a supported model.', um))
         prompt_supported_model_selection(um, 'Select a supported Copilot model', function(reselected_model, prompt_err)
           if prompt_err then
@@ -834,11 +899,13 @@ create_session = function(callback, opts)
             on_session_ready(nil, prompt_err)
             return
           end
-          state.config.session.model = reselected_model
-          state.current_model = reselected_model
           append_entry('system', 'Retrying session creation with model ' .. reselected_model)
           state.creating_session = true
-          create_session(callback, { model_selection_attempts = false })
+          create_session(callback, {
+            provider = provider,
+            model = reselected_model,
+            model_selection_attempts = false,
+          })
         end)
         return
       end
@@ -858,6 +925,7 @@ create_session = function(callback, opts)
       on_session_ready(nil, message)
       return
     end
+
 
     approvals.reset()
     start_event_stream(state.session_id)

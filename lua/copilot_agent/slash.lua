@@ -13,6 +13,7 @@ local init_project = require('copilot_agent.project_init')
 local lsp = require('copilot_agent.lsp')
 local model = require('copilot_agent.model')
 local render = require('copilot_agent.render')
+local test_mode = require('copilot_agent.test_mode')
 local service = require('copilot_agent.service')
 local session = require('copilot_agent.session')
 local session_names = require('copilot_agent.session_names')
@@ -49,8 +50,10 @@ local mode_permission = {
   ask = 'interactive',
   plan = 'interactive',
   agent = 'approve-reads',
+  test = 'interactive',
   autopilot = 'approve-all',
 }
+local set_input_mode
 local plan_mode_command
 
 local function parse(text)
@@ -1237,6 +1240,9 @@ local function session_command(args)
   if action == 'plan' then
     return plan_mode_command(rest)
   end
+  if action == 'mode' then
+    return set_input_mode(rest)
+  end
   if action == 'rename' then
     return rename_session(rest)
   end
@@ -1253,7 +1259,7 @@ local function session_command(args)
   return true
 end
 
-local function set_input_mode(mode)
+set_input_mode = function(mode)
   local next_mode = vim.trim(mode or ''):lower()
   if next_mode == '' then
     notify('Mode is required', vim.log.levels.WARN)
@@ -1283,7 +1289,14 @@ local function set_input_mode(mode)
 
   refresh_statuslines()
   append_entry('system', 'Mode: ' .. next_mode)
+  if next_mode == 'test' then
+    test_mode.open()
+  else
+    test_mode.close()
+  end
 end
+
+M.set_input_mode = set_input_mode
 
 plan_mode_command = function(args)
   set_input_mode('plan')
@@ -3802,6 +3815,7 @@ local handlers = {
   mcp = mcp_command,
   ['new'] = new_session_command,
   model = select_model_command,
+  mode = set_input_mode,
   plan = plan_mode_command,
   rename = rename_session,
   research = research_command,

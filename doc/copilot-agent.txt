@@ -879,8 +879,8 @@ v0.4.0 ~
   • Fixed missing POST /sessions/{id}/tools endpoint
 
 v0.5.0 ~
-  • Four chat modes: ask, plan, agent, autopilot (matching VS Code)
-  • Emoji icons in mode prompt prefix (💬 📋 🤖 🚀)
+  • Five chat modes: ask, plan, agent, test, autopilot (test is UI-only)
+  • Emoji icons in mode prompt prefix (💬 📋 🤖 🧪 🚀)
   • `approve-reads` permission mode (auto-approve reads, prompt writes)
   • Extmark-based role header highlights (works with treesitter)
   • `Prompt:` / `Response:` headers in chat history replay

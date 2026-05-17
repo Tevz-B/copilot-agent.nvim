@@ -8,6 +8,9 @@ thoughts/*
 
 .vscode/*
 .opencode/*
+bin/*
+server/copilot-agent
+copilot-session*
 
 # Go test cache / coverage
 *.test

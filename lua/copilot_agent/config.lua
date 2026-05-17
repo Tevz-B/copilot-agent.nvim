@@ -206,7 +206,7 @@ local state = {
   pending_session_context = nil, -- one-shot context block injected into the next prompt sent to the current session
   lsp_client_id = nil,
   -- Input buffer UI state
-  input_mode = 'agent', -- 'ask' | 'plan' | 'agent'
+  input_mode = 'agent', -- 'ask' | 'plan' | 'agent' | 'test' | 'autopilot'
   reasoning_effort = nil, -- current reasoning effort level (nil = model default)
   permission_mode = 'interactive', -- 'interactive' | 'approve-all' | 'autopilot'
   session_name = nil, -- auto-generated name from SDK (updated after each turn)

@@ -28,7 +28,7 @@ local setup_action_keymaps = chat.setup_action_keymaps
 
 local M = {}
 
-local input_modes = { 'ask', 'plan', 'agent', 'autopilot' }
+local input_modes = { 'ask', 'plan', 'agent', 'test', 'autopilot' }
 local session_label_max_len = 32
 local islist = vim.islist
 local separator_ns = vim.api.nvim_create_namespace('copilot_agent_input_separator')
@@ -2387,6 +2387,7 @@ local _mode_permission = {
   ask = 'interactive',
   plan = 'interactive',
   agent = 'approve-reads',
+  test = 'interactive',
   autopilot = 'approve-all',
 }
 
@@ -2394,6 +2395,7 @@ local _mode_icon = {
   ask = '💬',
   plan = '📋',
   agent = '🤖',
+  test = '🧪',
   autopilot = '🚀',
 }
 

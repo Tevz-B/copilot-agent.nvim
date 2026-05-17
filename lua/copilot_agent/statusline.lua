@@ -82,6 +82,7 @@ local _mode_icon = {
   ask = '💬',
   plan = '📋',
   agent = '🤖',
+  test = '🧪',
   autopilot = '🚀',
 }
 
@@ -90,6 +91,7 @@ local _sdk_label = {
   ask = 'single-turn',
   plan = 'plan',
   agent = 'loop',
+  test = 'ask',
   autopilot = 'loop',
 }
 

@@ -1424,6 +1424,7 @@ describe('user commands', function()
     'CopilotAgentStart',
     'CopilotAgentServerStart',
     'CopilotAgentAsk',
+    'CopilotAgentMode',
     'CopilotAgentModel',
     'CopilotAgentStop',
     'CopilotAgentStatus',
@@ -1436,6 +1437,39 @@ describe('user commands', function()
       assert_true(command_exists(cmd), cmd .. ' should exist')
     end)
   end
+
+  it('sets the test input mode from :CopilotAgentMode', function()
+    local agent = require('copilot_agent')
+    agent.setup({ auto_create_session = false, auto_start = false, notify = false })
+
+    vim.cmd('CopilotAgentMode test')
+
+    assert_eq('test', agent.state.input_mode)
+    assert_eq('interactive', agent.state.permission_mode)
+    vim.cmd('CopilotAgentMode ask')
+  end)
+
+  it('opens the UI test launcher from :CopilotAgentMode test', function()
+    local agent = require('copilot_agent')
+    agent.setup({ auto_create_session = false, auto_start = false, notify = false })
+
+    vim.cmd('CopilotAgentMode test')
+
+    assert_eq('test', agent.state.input_mode)
+    local found = false
+    for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+      if vim.api.nvim_buf_is_valid(bufnr) and vim.b[bufnr].copilot_agent_test_mode then
+        found = true
+        local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+        assert_true(vim.tbl_contains(lines, '# Copilot Agent Test Mode'))
+        assert_true(vim.tbl_contains(lines, '1. Text input prompt'))
+        assert_true(vim.tbl_contains(lines, '4. Diff preview'))
+        break
+      end
+    end
+    assert_true(found)
+    vim.cmd('CopilotAgentMode ask')
+  end)
 end)
 
 describe('fugitive commit command', function()

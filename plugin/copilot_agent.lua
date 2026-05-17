@@ -61,6 +61,21 @@ end, {
   desc = 'Send a prompt to Copilot Go',
 })
 
+vim.api.nvim_create_user_command('CopilotAgentMode', function(command)
+  local mode = vim.trim(table.concat(command.fargs, ' '))
+  if mode == '' then
+    vim.notify('CopilotAgentMode requires ask, plan, agent, test, or autopilot', vim.log.levels.WARN)
+    return
+  end
+  copilot_agent.set_input_mode(mode)
+end, {
+  nargs = '?',
+  complete = function()
+    return { 'ask', 'plan', 'agent', 'test', 'autopilot' }
+  end,
+  desc = 'Set the Copilot input mode (ask, plan, agent, test, autopilot)',
+})
+
 vim.api.nvim_create_user_command('CopilotAgentCompose', function(command)
   local arg = vim.trim(table.concat(command.fargs, ' '))
   local opts = {}

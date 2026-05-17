@@ -66,6 +66,10 @@ M._set_agent_mode = chat.set_agent_mode
 M._open_input_window = input.open_input_window
 M._pick_path = chat.pick_path
 
+function M.set_input_mode(mode)
+  return require('copilot_agent.slash').set_input_mode(mode)
+end
+
 function M.toggle_chat()
   chat.toggle_chat()
 end

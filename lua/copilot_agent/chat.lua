@@ -65,6 +65,7 @@ local function help_lines()
     '    💬 ask           Single-turn Q&A            → 🔐 interactive',
     '    📋 plan          Structured plan             → 🔐 interactive',
     '    🤖 agent         Agentic loop                → 📂 approve-reads',
+    '    🧪 test          UI/input review mode        → 🔐 interactive',
     '    🚀 autopilot     Agentic loop, fully auto    → ✅ approve-all',
     '',
     '  Model / permissions',
@@ -364,17 +365,27 @@ local function claim_chat_buffer_name(bufnr, buf_name)
   error(err)
 end
 
-local input_modes = { 'ask', 'plan', 'agent', 'autopilot' }
+local input_modes = { 'ask', 'plan', 'agent', 'test', 'autopilot' }
 local _perm_cycle = { 'interactive', 'approve-reads', 'approve-all', 'autopilot' }
+
+local function sdk_mode_for_input_mode(mode)
+  mode = vim.trim(type(mode) == 'string' and mode or '')
+  if mode == 'test' then
+    return 'ask'
+  end
+  return mode
+end
 
 -- Natural permission mode for each input mode, mirroring VS Code behaviour:
 --   ask/plan  → interactive   (tools need explicit approval)
 --   agent     → approve-reads (workspace reads auto-approved; writes/shell prompt)
+--   test      → interactive   (UI review/testing mode)
 --   autopilot → approve-all   (fully autonomous, no prompts)
 local _mode_permission = {
   ask = 'interactive',
   plan = 'interactive',
   agent = 'approve-reads',
+  test = 'interactive',
   autopilot = 'approve-all',
 }
 
@@ -932,7 +943,8 @@ function M.set_agent_mode(mode)
   if not state.session_id then
     return
   end
-  request('POST', string.format('/sessions/%s/mode', state.session_id), { mode = mode }, function(_, err)
+  local sdk_mode = sdk_mode_for_input_mode(mode)
+  request('POST', string.format('/sessions/%s/mode', state.session_id), { mode = sdk_mode }, function(_, err)
     if err then
       notify('Failed to set agent mode: ' .. err, vim.log.levels.WARN)
     end

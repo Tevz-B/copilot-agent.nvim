@@ -286,6 +286,15 @@ end
 
 local function open_preview_float(title, diff_text, opts)
   close_hover_preview()
+  opts = type(opts) == 'table' and opts or {}
+  local after_close = type(opts.after_close) == 'function' and opts.after_close or nil
+  local after_close_done = false
+  local function run_after_close()
+    if after_close and not after_close_done then
+      after_close_done = true
+      after_close()
+    end
+  end
   local lines = vim.split(type(diff_text) == 'string' and diff_text or '', '\n', { plain = true })
   local winid = anchor_winid(opts)
   local config
@@ -334,6 +343,7 @@ local function open_preview_float(title, diff_text, opts)
 
   local function close()
     close_hover_preview()
+    run_after_close()
   end
 
   vim.keymap.set('n', 'q', close, { buffer = buf, nowait = true })
@@ -365,6 +375,7 @@ local function open_preview_float(title, diff_text, opts)
     callback = function()
       if state.activity_hover_winid == win then
         close_hover_preview()
+        run_after_close()
       end
     end,
     once = true,

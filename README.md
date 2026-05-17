@@ -377,6 +377,7 @@ Use `:CopilotAgentDashboard` or `:CopilotAgentChat` to get started.
 | `:CopilotAgentChatToggle`            | Hide/show chat + input UI windows without reconnect/replay                                                                     |
 | `:CopilotAgentChatFocus`             | Focus or switch to an open chat buffer                                                                                         |
 | `:CopilotAgentAsk [prompt]`          | Send a prompt; no argument opens the input buffer                                                                              |
+| `:CopilotAgentMode [mode]`           | Set the input mode (`ask`, `plan`, `agent`, `test`, `autopilot`)                                                                |
 | `:CopilotAgentCompose [tab]`         | Open the compose scratch buffer; `tab` opens it in a new tab                                                                   |
 | `:CopilotAgentPromoteToCompose`      | Move current prompt-buffer text into compose                                                                                   |
 | `:CopilotAgentSendBuffer`            | Send the active compose buffer                                                                                                 |

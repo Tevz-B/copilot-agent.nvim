@@ -1223,6 +1223,12 @@ function M.ask(prompt, opts)
     return
   end
 
+  if state.input_mode == 'test' then
+    append_entry('user', text, opts.attachments and #opts.attachments > 0 and vim.deepcopy(opts.attachments) or nil)
+    append_entry('system', 'Test mode captured prompt locally; no request was sent.')
+    return
+  end
+
   -- Build attachment list for the API.
   local api_attachments = {}
   local temp_files = {} -- clipboard image temp files to delete after send

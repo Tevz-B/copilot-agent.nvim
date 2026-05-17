@@ -20,6 +20,7 @@ local sync_request = http.sync_request
 local ensure_service_running = service.ensure_service_running
 
 local normalize_model_entry = utils.normalize_model_entry
+local resolve_select_choice = utils.resolve_select_choice
 local unavailable_model_from_error = utils.unavailable_model_from_error
 
 local refresh_statuslines = sl.refresh_statuslines
@@ -36,6 +37,18 @@ local function deferred_select(items, opts, on_choice)
   vim.defer_fn(function()
     vim.ui.select(items, opts, on_choice)
   end, 20)
+end
+
+local function model_picker_label(item)
+  local label = item.label
+  if item.supports_reasoning and #(item.supported_efforts or {}) > 0 then
+    label = label .. ' 🧠'
+  end
+  return label
+end
+
+local function effort_picker_label(item)
+  return item.label
 end
 
 function M.store_model_cache(models)
@@ -242,15 +255,16 @@ function M.select_model(model)
 
     deferred_select(models, {
       prompt = 'Select Copilot model',
-      format_item = function(item)
-        local label = item.label
-        if item.supports_reasoning and #(item.supported_efforts or {}) > 0 then
-          label = label .. ' 🧠'
-        end
-        return label
-      end,
+      format_item = model_picker_label,
     }, function(choice)
       if not choice then
+        return
+      end
+      choice = resolve_select_choice(models, choice, model_picker_label)
+      local selected_id = type(choice) == 'table' and (choice.id or choice.name or choice.label) or choice
+      if type(selected_id) ~= 'string' or vim.trim(selected_id) == '' then
+        notify('Failed to set model: model is required', vim.log.levels.ERROR)
+        append_entry('error', 'Failed to set model: model is required')
         return
       end
       -- If the model supports reasoning effort, prompt for it.
@@ -265,12 +279,14 @@ function M.select_model(model)
         end
         deferred_select(efforts, {
           prompt = 'Reasoning effort for ' .. choice.name,
-          format_item = function(item)
-            return item.label
-          end,
+          format_item = effort_picker_label,
         }, function(effort_choice)
-          local reasoning = effort_choice and effort_choice.id or nil
-          M.apply_model(choice.id, function(_, apply_err)
+          effort_choice = resolve_select_choice(efforts, effort_choice, effort_picker_label)
+          local reasoning = nil
+          if effort_choice then
+            reasoning = type(effort_choice) == 'table' and (effort_choice.id or effort_choice.name or effort_choice.label) or effort_choice
+          end
+          M.apply_model(selected_id, function(_, apply_err)
             if apply_err then
               notify('Failed to set model: ' .. apply_err, vim.log.levels.ERROR)
               append_entry('error', 'Failed to set model: ' .. apply_err)
@@ -279,7 +295,7 @@ function M.select_model(model)
         end)
         return
       end
-      M.apply_model(choice.id, function(_, apply_err)
+      M.apply_model(selected_id, function(_, apply_err)
         if apply_err then
           notify('Failed to set model: ' .. apply_err, vim.log.levels.ERROR)
           append_entry('error', 'Failed to set model: ' .. apply_err)

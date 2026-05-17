@@ -835,6 +835,11 @@ func (s *service) ensureClientConnected() error {
 	if client != nil && client.State() == copilot.StateConnected {
 		return nil
 	}
+	if client == nil {
+		logWarnf("health check restarting Copilot CLI client: no connected client")
+	} else {
+		logWarnf("health check restarting Copilot CLI client: state=%v", client.State())
+	}
 	return s.restartCopilotClient(errors.New("copilot client is disconnected"), false)
 }
 

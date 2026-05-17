@@ -314,6 +314,29 @@ end
 -- to avoid circular requires between http and service modules.
 function M.request(method, path, body, callback, opts)
   opts = opts or {}
+  local function retry_after_startup_timeout(start_err, retry_fn)
+    if state.base_url_managed == false then
+      callback(nil, start_err, nil)
+      return
+    end
+    log(
+      string.format('http.request retrying after startup timeout method=%s path=%s reason=%s', tostring(method), tostring(path), serialize_log_value(start_err, { max_len = 600 })),
+      vim.log.levels.WARN
+    )
+    local service = require('copilot_agent.service')
+    service.forget_service_addr()
+    service.ensure_service_running(function(next_err)
+      if next_err then
+        log(
+          string.format('http.request startup timeout retry failed method=%s path=%s startup_error=%s', tostring(method), tostring(path), serialize_log_value(next_err, { max_len = 600 })),
+          vim.log.levels.WARN
+        )
+        callback(nil, start_err .. '\n' .. next_err, nil)
+        return
+      end
+      retry_fn()
+    end)
+  end
 
   if state.shutting_down then
     callback(nil, 'service is shutting down', nil)
@@ -331,6 +354,12 @@ function M.request(method, path, body, callback, opts)
     service.forget_service_addr()
     service.ensure_service_running(function(start_err)
       if start_err then
+        if type(start_err) == 'string' and start_err:find('timed out waiting for service health check', 1, true) ~= nil then
+          retry_after_startup_timeout(start_err, function()
+            M.raw_request(method, path, body, callback, opts)
+          end)
+          return
+        end
         callback(nil, start_err, nil)
         return
       end
@@ -359,6 +388,13 @@ function M.request(method, path, body, callback, opts)
           return
         end
         log(string.format('http.request retrying method=%s path=%s after service start', tostring(method), tostring(path)), vim.log.levels.DEBUG)
+        M.raw_request(method, path, body, callback, opts)
+      end)
+      return
+    end
+    if err and opts.auto_start ~= false and type(err) == 'string' and err:find('timed out waiting for service health check', 1, true) ~= nil then
+      retry_after_startup_timeout(err, function()
+        log(string.format('http.request retrying after startup timeout method=%s path=%s', tostring(method), tostring(path)), vim.log.levels.DEBUG)
         M.raw_request(method, path, body, callback, opts)
       end)
       return

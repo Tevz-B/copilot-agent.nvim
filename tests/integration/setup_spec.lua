@@ -884,6 +884,49 @@ describe('service coordination', function()
     assert_eq(1, raw_calls)
   end)
 
+  it('retries once after a startup health timeout by rediscovering the service address', function()
+    local http = require('copilot_agent.http')
+    local original_ensure_service_running = service.ensure_service_running
+    local original_forget_service_addr = service.forget_service_addr
+    local original_raw_request = http.raw_request
+    local ensure_calls = 0
+    local forget_calls = 0
+    local raw_calls = 0
+
+    agent.state.base_url_managed = true
+    agent.state.config.base_url = ''
+
+    service.ensure_service_running = function(callback)
+      ensure_calls = ensure_calls + 1
+      if ensure_calls == 1 then
+        callback('timed out waiting for service health check')
+        return
+      end
+      callback(nil)
+    end
+    service.forget_service_addr = function()
+      forget_calls = forget_calls + 1
+    end
+    http.raw_request = function(_, _, _, callback)
+      raw_calls = raw_calls + 1
+      callback({ ok = true }, nil, 200)
+    end
+
+    http.request('GET', '/sessions', nil, function(payload, err, status)
+      assert_eq(nil, err)
+      assert_eq(200, status)
+      assert_true(type(payload) == 'table' and payload.ok == true)
+    end)
+
+    service.ensure_service_running = original_ensure_service_running
+    service.forget_service_addr = original_forget_service_addr
+    http.raw_request = original_raw_request
+
+    assert_eq(2, ensure_calls)
+    assert_eq(2, forget_calls)
+    assert_eq(1, raw_calls)
+  end)
+
   it('updates the shared addr file from service startup output', function()
     agent.state.service_output = {}
     agent.state.service_addr_known = false
@@ -1440,12 +1483,19 @@ describe('user commands', function()
 
   it('sets the test input mode from :CopilotAgentMode', function()
     local agent = require('copilot_agent')
+    local test_mode = require('copilot_agent.test_mode')
     agent.setup({ auto_create_session = false, auto_start = false, notify = false })
+
+    local original_open = test_mode.open
+    test_mode.open = function()
+      return true
+    end
 
     vim.cmd('CopilotAgentMode test')
 
     assert_eq('test', agent.state.input_mode)
     assert_eq('interactive', agent.state.permission_mode)
+    test_mode.open = original_open
     vim.cmd('CopilotAgentMode ask')
   end)
 
@@ -1453,22 +1503,131 @@ describe('user commands', function()
     local agent = require('copilot_agent')
     agent.setup({ auto_create_session = false, auto_start = false, notify = false })
 
+    local seen_prompt
+    local seen_items
+    local original_select = vim.ui.select
+    vim.ui.select = function(items, opts, on_choice)
+      seen_items = {}
+      for _, item in ipairs(items) do
+        if opts and type(opts.format_item) == 'function' then
+          seen_items[#seen_items + 1] = opts.format_item(item)
+        else
+          seen_items[#seen_items + 1] = tostring(item)
+        end
+      end
+      seen_prompt = {
+        prompt = opts and opts.prompt or nil,
+      }
+      on_choice(nil)
+    end
+
     vim.cmd('CopilotAgentMode test')
 
     assert_eq('test', agent.state.input_mode)
-    local found = false
-    for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
-      if vim.api.nvim_buf_is_valid(bufnr) and vim.b[bufnr].copilot_agent_test_mode then
-        found = true
-        local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-        assert_true(vim.tbl_contains(lines, '# Copilot Agent Test Mode'))
-        assert_true(vim.tbl_contains(lines, '1. Text input prompt'))
-        assert_true(vim.tbl_contains(lines, '4. Diff preview'))
-        break
+    assert_not_nil(seen_prompt)
+    assert_eq('Copilot Agent test mode', seen_prompt.prompt)
+    assert_true((seen_items[1] or ''):find('ALL — Run all workflows', 1, true) ~= nil)
+    assert_true((seen_items[3] or ''):find('SELECT — Selection with long descriptions', 1, true) ~= nil)
+    assert_true((seen_items[4] or ''):find('REVIEW — Permission review prompt', 1, true) ~= nil)
+
+    vim.ui.select = original_select
+    vim.cmd('CopilotAgentMode ask')
+  end)
+
+  it('keeps test mode prompt submissions local', function()
+    local agent = require('copilot_agent')
+    local http = require('copilot_agent.http')
+    agent.setup({ auto_create_session = false, auto_start = false, notify = false })
+    agent.state.input_mode = 'test'
+    agent.state.session_id = 'session-123'
+
+    local opened = false
+    local request_count = 0
+    local original_open_chat = agent.open_chat
+    local original_request = http.request
+    agent.open_chat = function()
+      opened = true
+    end
+    http.request = function()
+      request_count = request_count + 1
+      error('unexpected request in test mode')
+    end
+    package.loaded['copilot_agent.chat'] = nil
+    local chat = require('copilot_agent.chat')
+
+    chat.ask('do you have summary for the changes')
+
+    agent.open_chat = original_open_chat
+    http.request = original_request
+
+    assert_false(opened)
+    assert_eq(0, request_count)
+    assert_true(#agent.state.entries >= 2)
+    assert_eq('user', agent.state.entries[#agent.state.entries - 1].kind)
+    assert_eq('do you have summary for the changes', agent.state.entries[#agent.state.entries - 1].content)
+    assert_eq('system', agent.state.entries[#agent.state.entries].kind)
+    assert_true(agent.state.entries[#agent.state.entries].content:find('Test mode captured prompt locally', 1, true) ~= nil)
+  end)
+
+  it('runs test mode workflows when the picker returns formatted strings', function()
+    local agent = require('copilot_agent')
+    local test_mode = require('copilot_agent.test_mode')
+    local activity_diff = require('copilot_agent.activity_diff')
+    agent.setup({ auto_create_session = false, auto_start = false, notify = false })
+    agent.state.input_mode = 'test'
+
+    local prompts = {}
+    local input_count = 0
+    local original_select = vim.ui.select
+    local original_input = vim.ui.input
+    local original_defer_fn = vim.defer_fn
+    local original_schedule = vim.schedule
+    local original_diff = activity_diff.open_preview_patch_text
+
+    vim.defer_fn = function(callback, _)
+      callback()
+    end
+    vim.schedule = function(callback)
+      callback()
+    end
+    vim.ui.input = function(_, on_choice)
+      input_count = input_count + 1
+      on_choice('hello')
+    end
+    vim.ui.select = function(items, opts, on_choice)
+      prompts[#prompts + 1] = opts.prompt
+      if opts.prompt == 'Copilot Agent test mode' then
+        on_choice(opts.format_item(items[1]))
+        return
+      end
+      if opts.prompt == 'UI test: choose one item with code and long description' then
+        on_choice(opts.format_item(items[1]))
+        return
+      end
+      if opts.prompt == 'UI test: permission review with coded options' then
+        on_choice(opts.format_item(items[2]))
+        return
+      end
+      on_choice(nil)
+    end
+    activity_diff.open_preview_patch_text = function(_, opts)
+      if opts and type(opts.after_close) == 'function' then
+        opts.after_close()
       end
     end
-    assert_true(found)
-    vim.cmd('CopilotAgentMode ask')
+
+    test_mode.open()
+
+    vim.ui.select = original_select
+    vim.ui.input = original_input
+    vim.defer_fn = original_defer_fn
+    vim.schedule = original_schedule
+    activity_diff.open_preview_patch_text = original_diff
+
+    assert_true(input_count >= 1)
+    assert_true(vim.tbl_contains(prompts, 'Copilot Agent test mode'))
+    assert_true(vim.tbl_contains(prompts, 'UI test: choose one item with code and long description'))
+    assert_true(vim.tbl_contains(prompts, 'UI test: permission review with coded options'))
   end)
 end)
 
@@ -4071,6 +4230,102 @@ describe('model picker', function()
 
     assert_eq(1, #prompts)
     assert_eq('Select Copilot model', prompts[1])
+  end)
+
+  it('accepts string choices from the model picker callback', function()
+    local prompts = {}
+    local deferred
+    local deferred_ms
+
+    model.fetch_models = function(callback)
+      callback({
+        {
+          id = 'gpt-5.4',
+          name = 'GPT-5.4',
+          label = 'GPT-5.4 (gpt-5.4)',
+          supports_reasoning = false,
+        },
+      }, nil)
+    end
+
+    vim.defer_fn = function(callback, ms)
+      deferred = callback
+      deferred_ms = ms
+    end
+
+    vim.ui.select = function(_, opts, on_choice)
+      prompts[#prompts + 1] = opts.prompt
+      on_choice('gpt-5.4')
+    end
+
+    model.select_model()
+
+    assert_eq(0, #prompts)
+    assert_not_nil(deferred)
+    assert_eq(20, deferred_ms)
+
+    deferred()
+
+    assert_eq(1, #prompts)
+    assert_eq('Select Copilot model', prompts[1])
+    assert_eq('gpt-5.4', require('copilot_agent.config').state.config.session.model)
+  end)
+
+  it('opens the reasoning effort picker when the model picker returns a formatted string', function()
+    local prompts = {}
+    local deferred = {}
+    local applied
+
+    model.fetch_models = function(callback)
+      callback({
+        {
+          id = 'claude-opus-4.6',
+          name = 'Claude Opus 4.6',
+          label = 'Claude Opus 4.6 (claude-opus-4.6)',
+          supports_reasoning = true,
+          supported_efforts = { 'low', 'medium', 'high' },
+          default_effort = 'medium',
+        },
+      }, nil)
+    end
+
+    model.apply_model = function(selected_model, callback, opts)
+      applied = {
+        model = selected_model,
+        reasoning_effort = opts and opts.reasoning_effort or nil,
+      }
+      if callback then
+        callback(selected_model, nil)
+      end
+    end
+
+    vim.defer_fn = function(callback, ms)
+      deferred[#deferred + 1] = { callback = callback, ms = ms }
+    end
+
+    vim.ui.select = function(items, opts, on_choice)
+      prompts[#prompts + 1] = opts.prompt
+      if opts.prompt == 'Select Copilot model' then
+        on_choice(opts.format_item(items[1]))
+        return
+      end
+      on_choice(opts.format_item(items[2]))
+    end
+
+    model.select_model()
+
+    assert_eq(0, #prompts)
+    assert_eq(1, #deferred)
+    deferred[1].callback()
+    assert_eq(1, #prompts)
+    assert_eq('Select Copilot model', prompts[1])
+    assert_eq(2, #deferred)
+    deferred[2].callback()
+    assert_eq(2, #prompts)
+    assert_eq('Reasoning effort for Claude Opus 4.6', prompts[2])
+    assert_not_nil(applied)
+    assert_eq('claude-opus-4.6', applied.model)
+    assert_eq('medium', applied.reasoning_effort)
   end)
 end)
 
@@ -8963,6 +9218,12 @@ describe('chat input behavior', function()
 
     input._promote_input_to_compose()
 
+    vim.wait(1000, function()
+      return not (agent.state.input_winid and vim.api.nvim_win_is_valid(agent.state.input_winid))
+        and agent.state.compose_winid
+        and vim.api.nvim_win_is_valid(agent.state.compose_winid)
+    end)
+
     assert_true(not (agent.state.input_winid and vim.api.nvim_win_is_valid(agent.state.input_winid)))
     assert_eq('move this into compose', table.concat(vim.api.nvim_buf_get_lines(agent.state.compose_bufnr, 0, -1, false), '\n'))
     assert_eq(agent.state.compose_winid, vim.api.nvim_get_current_win())
@@ -9010,6 +9271,10 @@ describe('chat input behavior', function()
     local prompt = input._input_prompt_prefix(agent.state.input_bufnr)
     vim.api.nvim_buf_set_lines(agent.state.input_bufnr, 0, -1, false, { prompt .. 'promote by command' })
     vim.cmd('CopilotAgentPromoteToCompose')
+
+    vim.wait(1000, function()
+      return agent.state.compose_bufnr and vim.api.nvim_buf_is_valid(agent.state.compose_bufnr)
+    end)
 
     assert_eq('promote by command', table.concat(vim.api.nvim_buf_get_lines(agent.state.compose_bufnr, 0, -1, false), '\n'))
   end)

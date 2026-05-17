@@ -4,9 +4,10 @@
 
 local cfg = require('copilot_agent.config')
 local activity_diff = require('copilot_agent.activity_diff')
+local utils = require('copilot_agent.utils')
 local notify = cfg.notify
 local state = cfg.state
-local window = require('copilot_agent.window')
+local resolve_select_choice = utils.resolve_select_choice
 
 local M = {}
 
@@ -20,56 +21,172 @@ local SAMPLE_DIFF = table.concat({
   ' return value',
 }, '\n')
 
-local menu_bufnr
-local menu_winid
-
-local function close_menu()
-  if menu_winid and vim.api.nvim_win_is_valid(menu_winid) then
-    pcall(vim.api.nvim_win_close, menu_winid, true)
-  end
-  if menu_bufnr and vim.api.nvim_buf_is_valid(menu_bufnr) then
-    pcall(vim.api.nvim_buf_delete, menu_bufnr, { force = true })
-  end
-  menu_bufnr = nil
-  menu_winid = nil
+local function reopen_menu()
+  vim.defer_fn(function()
+    if state.input_mode == 'test' then
+      M.open()
+    end
+  end, 20)
 end
 
-local function open_menu()
-  if state.input_mode ~= 'test' then
-    return false
+local function queue_step(step)
+  if type(step) ~= 'function' then
+    return
   end
-  if menu_winid and vim.api.nvim_win_is_valid(menu_winid) then
-    vim.api.nvim_set_current_win(menu_winid)
-    return true
+  vim.defer_fn(function()
+    if state.input_mode == 'test' then
+      step()
+    end
+  end, 20)
+end
+
+local function item_label(item)
+  if type(item) == 'string' then
+    return item
   end
 
-  local lines = {
-    '# Copilot Agent Test Mode',
-    '',
-    'Run a sample UI flow:',
-    '',
-    '1. Text input prompt',
-    '2. Choice selection prompt',
-    '3. Permission review prompt',
-    '4. Diff preview',
-    '5. Editable buffer',
-    '',
-    'Press <CR> on a line or use 1-5.',
-    'q / <Esc> close',
+  local code = vim.trim(item.code or item.id or item.short or '')
+  local title = vim.trim(item.label or item.title or item.name or '')
+  local description = vim.trim(item.description or item.detail or '')
+
+  local header = title
+  if code ~= '' then
+    header = header ~= '' and string.format('%s — %s', code, header) or code
+  end
+  if description ~= '' then
+    return header ~= '' and (header .. ' · ' .. description) or description
+  end
+  return header
+end
+
+local function run_text_prompt(next_step)
+  notify('UI test: opening text input prompt', vim.log.levels.INFO)
+  vim.ui.input({
+    prompt = 'UI test: paste a detailed request, e.g. "Summarize this change set and mention the file names": ',
+  }, function(input)
+    if input and input ~= '' then
+      notify('UI test input: ' .. input, vim.log.levels.INFO)
+    else
+      notify('UI test input dismissed', vim.log.levels.WARN)
+    end
+    if next_step then
+      queue_step(next_step)
+    else
+      reopen_menu()
+    end
+  end)
+end
+
+local function run_choice_prompt(next_step)
+  notify('UI test: opening selection prompt', vim.log.levels.INFO)
+  local items = {
+    {
+      code = 'A12',
+      label = 'Insert markdown summary',
+      description = 'Use a long description to exercise picker wrapping and show the code + label together.',
+    },
+    {
+      code = 'B07',
+      label = 'Open recent workspace session',
+      description = 'Display a more realistic action name alongside the stable code that would appear in a picker.',
+    },
+    {
+      code = 'C42',
+      label = 'Switch model for this session',
+      description = 'Simulate a menu item with an id-like code, a readable title, and a longer explanatory tail.',
+    },
   }
+  vim.ui.select(items, {
+    prompt = 'UI test: choose one item with code and long description',
+    format_item = item_label,
+  }, function(choice)
+    choice = resolve_select_choice(items, choice, item_label)
+    if choice then
+      notify('UI test choice: ' .. item_label(choice), vim.log.levels.INFO)
+    else
+      notify('UI test choice dismissed', vim.log.levels.WARN)
+    end
+    if next_step then
+      queue_step(next_step)
+    else
+      reopen_menu()
+    end
+  end)
+end
 
-  menu_bufnr = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_buf_set_lines(menu_bufnr, 0, -1, false, lines)
-  vim.bo[menu_bufnr].buftype = 'nofile'
-  vim.bo[menu_bufnr].bufhidden = 'wipe'
-  vim.bo[menu_bufnr].swapfile = false
-  vim.bo[menu_bufnr].modifiable = false
-  vim.bo[menu_bufnr].filetype = 'markdown'
-  vim.b[menu_bufnr].copilot_agent_test_mode = true
+local function run_permission_prompt(next_step)
+  notify('UI test: opening permission review prompt', vim.log.levels.INFO)
+  local items = {
+    {
+      code = 'ALLOW',
+      label = 'Allow patch application',
+      description = 'Approve a sample edit that would touch multiple files and look like a normal review prompt.',
+    },
+    {
+      code = 'DENY',
+      label = 'Reject the change',
+      description = 'Exercise the same choice list with a negative outcome and a descriptive code.',
+    },
+    {
+      code = 'DIFF',
+      label = 'Show diff before deciding',
+      description = 'Open the diff preview flow from a picker option that carries both text and a code.',
+    },
+  }
+  vim.ui.select(items, {
+    prompt = 'UI test: permission review with coded options',
+    format_item = item_label,
+  }, function(choice)
+    choice = resolve_select_choice(items, choice, item_label)
+    if choice and choice.code == 'DIFF' then
+      activity_diff.open_preview_patch_text(SAMPLE_DIFF, {
+        enter = true,
+        after_close = next_step or reopen_menu,
+      })
+      return
+    end
+    if choice then
+      notify('UI test permission: ' .. item_label(choice), vim.log.levels.INFO)
+    else
+      notify('UI test permission dismissed', vim.log.levels.WARN)
+    end
+    if next_step then
+      queue_step(next_step)
+    else
+      reopen_menu()
+    end
+  end)
+end
 
-  local width = math.min(math.max(52, math.floor(vim.o.columns * 0.5)), 96)
-  local height = math.min(math.max(#lines + 2, 10), math.floor(vim.o.lines * 0.7))
-  menu_winid = vim.api.nvim_open_win(menu_bufnr, true, {
+local function run_diff_preview(next_step)
+  notify('UI test: opening diff preview', vim.log.levels.INFO)
+  activity_diff.open_preview_patch_text(SAMPLE_DIFF, {
+    enter = true,
+    after_close = next_step or reopen_menu,
+  })
+end
+
+local function run_edit_buffer(next_step)
+  notify('UI test: opening editable buffer', vim.log.levels.INFO)
+  local buf = vim.api.nvim_create_buf(true, false)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, {
+    '-- Editable test buffer',
+    '-- Modify this buffer to test editing UI.',
+    '',
+    'local value = 1',
+    'local next_value = value + 1',
+    'return next_value',
+  })
+  vim.bo[buf].buftype = ''
+  vim.bo[buf].bufhidden = 'wipe'
+  vim.bo[buf].swapfile = false
+  vim.bo[buf].modifiable = true
+  vim.bo[buf].filetype = 'lua'
+  vim.b[buf].copilot_agent_test_edit = true
+
+  local height = math.min(math.max(12, math.floor(vim.o.lines * 0.6)), 24)
+  local width = math.min(math.max(70, math.floor(vim.o.columns * 0.7)), 120)
+  local win = vim.api.nvim_open_win(buf, true, {
     relative = 'editor',
     width = width,
     height = height,
@@ -77,165 +194,140 @@ local function open_menu()
     col = math.floor((vim.o.columns - width) / 2),
     style = 'minimal',
     border = 'rounded',
-    title = ' UI test launcher ',
+    title = ' UI test: edit buffer ',
     title_pos = 'center',
   })
+  vim.wo[win].wrap = false
+  vim.wo[win].linebreak = false
 
-  window.protect_markdown_buffer(menu_bufnr, menu_winid)
-  window.set_window_syntax(menu_winid, 'markdown')
-  vim.wo[menu_winid].wrap = true
-  vim.wo[menu_winid].linebreak = false
-
-  local function reopen_menu_after_modal()
-    vim.schedule(function()
-      if state.input_mode == 'test' then
-        open_menu()
-      end
-    end)
-  end
-
-  local function open_edit_buffer()
-    close_menu()
-    local buf = vim.api.nvim_create_buf(true, false)
-    vim.api.nvim_buf_set_lines(buf, 0, -1, false, {
-      '-- Editable test buffer',
-      '-- Modify this buffer to test editing UI.',
-      '',
-      'local value = 1',
-      'local next_value = value + 1',
-      'return next_value',
-    })
-    vim.bo[buf].buftype = ''
-    vim.bo[buf].bufhidden = 'wipe'
-    vim.bo[buf].swapfile = false
-    vim.bo[buf].modifiable = true
-    vim.bo[buf].filetype = 'lua'
-    vim.b[buf].copilot_agent_test_edit = true
-    local win = vim.api.nvim_open_win(buf, true, {
-      relative = 'editor',
-      width = math.min(math.max(70, math.floor(vim.o.columns * 0.7)), 120),
-      height = math.min(math.max(12, math.floor(vim.o.lines * 0.6)), 24),
-      row = math.floor((vim.o.lines - math.min(math.max(12, math.floor(vim.o.lines * 0.6)), 24)) / 2),
-      col = math.floor((vim.o.columns - math.min(math.max(70, math.floor(vim.o.columns * 0.7)), 120)) / 2),
-      style = 'minimal',
-      border = 'rounded',
-      title = ' UI test: edit buffer ',
-      title_pos = 'center',
-    })
-    window.disable_folds(win)
-    local function close_edit()
-      if vim.api.nvim_win_is_valid(win) then
-        vim.api.nvim_win_close(win, true)
-      end
-      reopen_menu_after_modal()
+  local closed = false
+  local function close_edit()
+    if closed then
+      return
     end
-    vim.keymap.set('n', 'q', close_edit, { buffer = buf, nowait = true })
-    vim.keymap.set('n', '<Esc>', close_edit, { buffer = buf, nowait = true })
-    vim.keymap.set({ 'n', 'i' }, '<C-c>', close_edit, { buffer = buf, nowait = true })
-    vim.api.nvim_create_autocmd('WinClosed', {
-      pattern = tostring(win),
-      once = true,
-      callback = reopen_menu_after_modal,
-    })
-  end
-
-  local function run_text_prompt()
-    close_menu()
-    vim.ui.input({ prompt = 'UI test: enter freeform text: ' }, function(input)
-      if input and input ~= '' then
-        notify('UI test input: ' .. input, vim.log.levels.INFO)
-      else
-        notify('UI test input dismissed', vim.log.levels.WARN)
-      end
-      reopen_menu_after_modal()
-    end)
-  end
-
-  local function run_choice_prompt()
-    close_menu()
-    vim.ui.select({ 'Choice A', 'Choice B', 'Choice C' }, { prompt = 'UI test: choose one option' }, function(choice)
-      if choice then
-        notify('UI test choice: ' .. choice, vim.log.levels.INFO)
-      else
-        notify('UI test choice dismissed', vim.log.levels.WARN)
-      end
-      reopen_menu_after_modal()
-    end)
-  end
-
-  local function run_diff_preview()
-    close_menu()
-    activity_diff.open_preview_patch_text(SAMPLE_DIFF, {
-      enter = true,
-      after_close = reopen_menu_after_modal,
-    })
-  end
-
-  local function run_permission_prompt()
-    close_menu()
-    local options = { 'Allow', 'Deny', 'Show diff' }
-    vim.ui.select(options, { prompt = 'UI test: permission review' }, function(choice)
-      if choice == 'Show diff' then
-        activity_diff.open_preview_patch_text(SAMPLE_DIFF, {
-          enter = true,
-          after_close = reopen_menu_after_modal,
-        })
-        return
-      end
-      if choice then
-        notify('UI test permission: ' .. choice, vim.log.levels.INFO)
-      else
-        notify('UI test permission dismissed', vim.log.levels.WARN)
-      end
-      reopen_menu_after_modal()
-    end)
-  end
-
-  local actions = {
-    [1] = run_text_prompt,
-    [2] = run_choice_prompt,
-    [3] = run_permission_prompt,
-    [4] = run_diff_preview,
-    [5] = open_edit_buffer,
-  }
-
-  local function run_current()
-    local row = (vim.api.nvim_win_get_cursor(menu_winid)[1] or 1) - 4
-    local action = actions[row]
-    if action then
-      action()
+    closed = true
+    if vim.api.nvim_win_is_valid(win) then
+      vim.api.nvim_win_close(win, true)
+    end
+    if next_step then
+      queue_step(next_step)
+    else
+      reopen_menu()
     end
   end
 
-  vim.keymap.set('n', 'q', close_menu, { buffer = menu_bufnr, nowait = true })
-  vim.keymap.set('n', '<Esc>', close_menu, { buffer = menu_bufnr, nowait = true })
-  vim.keymap.set('n', '<Esc><Esc>', close_menu, { buffer = menu_bufnr, nowait = true })
-  vim.keymap.set({ 'n', 'i' }, '<C-c>', close_menu, { buffer = menu_bufnr, nowait = true })
-  vim.keymap.set('n', '<CR>', run_current, { buffer = menu_bufnr, nowait = true })
-  vim.keymap.set('n', '1', run_text_prompt, { buffer = menu_bufnr, nowait = true })
-  vim.keymap.set('n', '2', run_choice_prompt, { buffer = menu_bufnr, nowait = true })
-  vim.keymap.set('n', '3', run_permission_prompt, { buffer = menu_bufnr, nowait = true })
-  vim.keymap.set('n', '4', run_diff_preview, { buffer = menu_bufnr, nowait = true })
-  vim.keymap.set('n', '5', open_edit_buffer, { buffer = menu_bufnr, nowait = true })
-
+  vim.keymap.set('n', 'q', close_edit, { buffer = buf, nowait = true })
+  vim.keymap.set('n', '<Esc>', close_edit, { buffer = buf, nowait = true })
+  vim.keymap.set({ 'n', 'i' }, '<C-c>', close_edit, { buffer = buf, nowait = true })
   vim.api.nvim_create_autocmd('WinClosed', {
-    pattern = tostring(menu_winid),
+    pattern = tostring(win),
     once = true,
     callback = function()
-      menu_winid = nil
-      menu_bufnr = nil
+      close_edit()
     end,
   })
+end
+
+local function run_all()
+  local steps = {
+    run_text_prompt,
+    run_choice_prompt,
+    run_permission_prompt,
+    run_diff_preview,
+    run_edit_buffer,
+  }
+
+  local index = 1
+  local function next_step()
+    index = index + 1
+    local step = steps[index]
+    if step then
+      step(next_step)
+    else
+      reopen_menu()
+    end
+  end
+
+  local first = steps[index]
+  if first then
+    queue_step(function()
+      first(next_step)
+    end)
+  end
+end
+
+function M.open()
+  if state.input_mode ~= 'test' then
+    return false
+  end
+
+  local items = {
+    {
+      code = 'ALL',
+      label = 'Run all workflows',
+      description = 'Text input, coded select, permission review, diff preview, and editable buffer in sequence.',
+    },
+    {
+      code = 'TEXT',
+      label = 'Text input prompt',
+      description = 'Ask for a long freeform request the same way a real prompt would.',
+    },
+    {
+      code = 'SELECT',
+      label = 'Selection with long descriptions',
+      description = 'Show a picker with codes, labels, and long explanatory text.',
+    },
+    {
+      code = 'REVIEW',
+      label = 'Permission review prompt',
+      description = 'Simulate approve / reject / diff choices with coded options.',
+    },
+    {
+      code = 'DIFF',
+      label = 'Diff preview',
+      description = 'Open the diff viewer from the launcher.',
+    },
+    {
+      code = 'EDIT',
+      label = 'Editable buffer',
+      description = 'Open a normal buffer that can be edited like a draft response.',
+    },
+  }
+
+  vim.ui.select(items, {
+    prompt = 'Copilot Agent test mode',
+    format_item = item_label,
+  }, function(choice)
+    choice = resolve_select_choice(items, choice, item_label)
+    if choice == nil then
+      return
+    end
+    vim.schedule(function()
+      if state.input_mode ~= 'test' then
+        return
+      end
+      notify('UI test: selected ' .. item_label(choice), vim.log.levels.INFO)
+      if choice.code == 'ALL' then
+        run_all()
+      elseif choice.code == 'TEXT' then
+        run_text_prompt()
+      elseif choice.code == 'SELECT' then
+        run_choice_prompt()
+      elseif choice.code == 'REVIEW' then
+        run_permission_prompt()
+      elseif choice.code == 'DIFF' then
+        run_diff_preview()
+      elseif choice.code == 'EDIT' then
+        run_edit_buffer()
+      end
+    end)
+  end)
 
   return true
 end
 
-function M.open()
-  return open_menu()
-end
-
 function M.close()
-  close_menu()
+  return true
 end
 
 return M

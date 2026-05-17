@@ -2158,11 +2158,13 @@ end
 local function promote_input_to_compose()
   local input_text = get_existing_input_text()
   state.prompt_prefill = input_text ~= '' and input_text or nil
-  close_existing_input_window({ preserve_contents = false, skip_focus = true })
-  M.open_compose_buffer({
-    initial_text = input_text,
-    replace_text = true,
-  })
+  vim.schedule(function()
+    close_existing_input_window({ preserve_contents = false, skip_focus = true })
+    M.open_compose_buffer({
+      initial_text = input_text,
+      replace_text = true,
+    })
+  end)
 end
 
 local function configured_promote_keymaps()

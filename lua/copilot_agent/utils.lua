@@ -179,6 +179,42 @@ function M.normalize_model_entry(entry)
   }
 end
 
+-- Resolve vim.ui.select callback values across providers that return either the
+-- original item or the rendered label string.
+function M.resolve_select_choice(items, choice, format_item)
+  if choice == nil or type(items) ~= 'table' then
+    return choice
+  end
+  if type(choice) == 'table' then
+    return choice
+  end
+  if type(choice) ~= 'string' then
+    return choice
+  end
+
+  local function matches(candidate)
+    return type(candidate) == 'string' and candidate ~= '' and candidate == choice
+  end
+
+  for _, item in ipairs(items) do
+    if type(format_item) == 'function' and matches(format_item(item)) then
+      return item
+    end
+    if type(item) == 'string' and matches(item) then
+      return item
+    end
+    if type(item) == 'table' then
+      for _, key in ipairs({ 'id', 'name', 'label', 'title', 'code' }) do
+        if matches(item[key]) then
+          return item
+        end
+      end
+    end
+  end
+
+  return choice
+end
+
 -- Extract the model name from an "unavailable model" error string.
 -- Returns the model string or nil if the error doesn't match.
 function M.unavailable_model_from_error(err)

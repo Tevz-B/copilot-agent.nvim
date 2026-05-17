@@ -254,6 +254,7 @@ local state = {
   background_tasks = {}, -- non-terminal background/subagent tasks still in flight
   -- Live agent activity (updated from SSE events, shown in statusline)
   current_model = nil, -- model ID for the currently attached session
+  pending_session_model = nil, -- model selected before a session exists; consumed by the next session create
   session_models = {}, -- per-session model cache keyed by provider::sessionId
   active_tool = nil, -- name of currently executing tool (nil when idle)
   active_tool_run_id = nil, -- overlay queue id for the currently executing shell tool
@@ -428,6 +429,12 @@ end
 
 local function active_session_model(session_id, provider)
   local active_session_id = type(session_id) == 'string' and session_id or state.session_id
+  if type(active_session_id) ~= 'string' or active_session_id == '' then
+    if type(state.pending_session_model) == 'string' and state.pending_session_model ~= '' then
+      return state.pending_session_model
+    end
+  end
+
   if type(active_session_id) == 'string' and active_session_id ~= '' then
     local models = state.session_models
     if type(models) == 'table' then
@@ -437,17 +444,16 @@ local function active_session_model(session_id, provider)
         return model
       end
     end
-    if type(state.current_model) == 'string' and state.current_model ~= '' then
+    if active_session_id == state.session_id and type(state.current_model) == 'string' and state.current_model ~= '' then
       return state.current_model
     end
-    return nil
   end
 
-  local model = state.config and state.config.session and state.config.session.model
-  if type(model) == 'string' and model ~= '' then
-    return model
+  local session_model = state.config and state.config.session and state.config.session.model
+  if type(session_model) == 'string' and session_model ~= '' then
+    return session_model
   end
-  return 'auto'
+  return nil
 end
 
 return {

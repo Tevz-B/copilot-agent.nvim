@@ -188,7 +188,7 @@ function M.apply_model(model, callback, opts)
     })
   end
   if not state.session_id then
-    state.config.session.model = selected
+    state.pending_session_model = selected
     append_entry('system', 'Model for next session: ' .. selected)
     if callback then
       callback(selected, nil)
@@ -225,7 +225,7 @@ function M.apply_model(model, callback, opts)
     end
     local active_model = response and response.model or selected
     state.current_model = active_model
-    state.config.session.model = active_model
+    state.pending_session_model = nil
     if state.session_id and state.session_id ~= '' then
       local key = session_model_key(state.session_id, session_provider(state.session_id, type(active_provider) == 'function' and active_provider() or nil))
       if key then

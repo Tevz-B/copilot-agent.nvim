@@ -2180,7 +2180,6 @@ end
 local function sync_model_state(model, reasoning_effort, session_id)
   if type(model) == 'string' and model ~= '' then
     state.current_model = model
-    state.config.session.model = model
     local active_session_id = type(session_id) == 'string' and session_id ~= '' and session_id or state.session_id
     if type(active_session_id) == 'string' and active_session_id ~= '' then
       local key = session_model_key(active_session_id, provider_for_session(active_session_id))
@@ -3556,8 +3555,6 @@ local function handle_session_event(payload)
   if event_type == 'session.usage_info' then
     state.context_tokens = data.currentTokens
     state.context_limit = data.tokenLimit
-    -- If the host provides quota snapshots on this session-level event, persist
-    -- a lightweight usage snapshot so the statusline can display quota info.
     local quota_snapshots = data.quotaSnapshots or data.quota_snapshots
     if quota_snapshots then
       local quotas, primary = assistant_usage.normalize_quotas(quota_snapshots)

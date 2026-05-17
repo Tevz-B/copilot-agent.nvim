@@ -53,6 +53,20 @@ local function current_provider()
   return type(active_provider) == 'function' and active_provider() or 'copilot'
 end
 
+local function requested_model_for_session(session_id, provider, override)
+  local requested = type(override) == 'string' and vim.trim(override) or ''
+  if requested ~= '' then
+    return requested
+  end
+
+  local session_model = cfg.active_session_model(session_id, provider)
+  if type(session_model) == 'string' and session_model ~= '' then
+    return session_model
+  end
+
+  return nil
+end
+
 local function set_active_provider(provider)
   local normalized = provider_key(provider)
   if normalized then
@@ -446,6 +460,7 @@ function M.resume_session(session_id, callback, opts)
   opts = opts or {}
   local provider = set_active_provider(opts.provider or session_provider_for(session_id))
   local requested_wd = working_directory()
+  local requested_model = requested_model_for_session(session_id, provider, opts.model)
   log(string.format('resume_session request id=%s provider=%s cwd=%s', format_session_id(session_id), tostring(provider), requested_wd), vim.log.levels.DEBUG)
   local request_fn = opts.strict_discovery == true and request_with_managed_base_url or request
   request_fn('POST', '/sessions', {
@@ -458,7 +473,7 @@ function M.resume_session(session_id, callback, opts)
     workingDirectory = requested_wd,
     streaming = state.config.session.streaming,
     enableConfigDiscovery = state.config.session.enable_config_discovery,
-    model = cfg.active_session_model(session_id, provider) or state.config.session.model,
+    model = requested_model,
     agent = state.config.session.agent,
   }, function(response, err)
     state.startup_session_discovery = false
@@ -509,6 +524,7 @@ function M.resume_session(session_id, callback, opts)
       cache_session_model(resumed_session_id, resumed_provider, response.model)
       state.current_model = response.model
     end
+    state.pending_session_model = nil
 
     -- Ensure an initial checkpoint exists for the session so diffs have a baseline.
     -- Create or initialize checkpoint repo asynchronously but don't block resume.
@@ -888,12 +904,13 @@ create_session = function(callback, opts)
   opts = opts or {}
   local provider = set_active_provider(opts.provider or current_provider())
   local requested_wd = working_directory()
+  local requested_model = requested_model_for_session(opts.session_id, provider, opts.model)
   log(
     string.format(
       'create_session request provider=%s cwd=%s model=%s agent=%s permission=%s',
       tostring(provider),
       requested_wd,
-      tostring(state.config.session.model or '<default>'),
+      tostring(requested_model or '<default>'),
       tostring(state.config.session.agent or '<default>'),
       tostring(state.permission_mode or state.config.permission_mode)
     ),
@@ -909,7 +926,7 @@ create_session = function(callback, opts)
     workingDirectory = requested_wd,
     streaming = state.config.session.streaming,
     enableConfigDiscovery = state.config.session.enable_config_discovery,
-    model = cfg.active_session_model(opts.session_id, provider) or state.config.session.model,
+    model = requested_model,
     agent = state.config.session.agent,
   }, function(response, err)
     state.startup_session_discovery = false
@@ -940,7 +957,7 @@ create_session = function(callback, opts)
         on_session_ready(nil, err)
         return
       end
-      if um and state.config.session.model == um and opts.model_selection_attempts ~= false then
+      if um and requested_model == um and opts.model_selection_attempts ~= false then
         append_entry('system', string.format('Model "%s" is unavailable; choose a supported model.', um))
         prompt_supported_model_selection(um, 'Select a supported model', function(reselected_model, prompt_err)
           if prompt_err then
@@ -949,12 +966,11 @@ create_session = function(callback, opts)
             on_session_ready(nil, prompt_err)
             return
           end
-          state.config.session.model = reselected_model
-          state.current_model = reselected_model
           append_entry('system', 'Retrying session creation with model ' .. reselected_model)
           state.creating_session = true
           create_session(callback, {
             provider = provider,
+            model = reselected_model,
             model_selection_attempts = false,
           })
         end)
@@ -986,6 +1002,7 @@ create_session = function(callback, opts)
       cache_session_model(state.session_id, created_provider, response.model)
       state.current_model = response.model
     end
+    state.pending_session_model = nil
 
     approvals.reset()
     start_event_stream(state.session_id)

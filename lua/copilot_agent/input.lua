@@ -6,6 +6,7 @@ local cfg = require('copilot_agent.config')
 local http = require('copilot_agent.http')
 local service = require('copilot_agent.service')
 local session_names = require('copilot_agent.session_names')
+local session_mod = require('copilot_agent.session')
 local sl = require('copilot_agent.statusline')
 local chat = require('copilot_agent.chat')
 local prompt = require('copilot_agent.prompt')
@@ -14,6 +15,8 @@ local win = require('copilot_agent.window')
 
 local state = cfg.state
 local SLASH_COMMANDS = cfg.SLASH_COMMANDS
+local active_provider = cfg.active_provider
+local session_provider = cfg.session_provider
 
 local request = http.request
 
@@ -27,6 +30,14 @@ local set_agent_mode = chat.set_agent_mode
 local setup_action_keymaps = chat.setup_action_keymaps
 
 local M = {}
+
+local function provider_for_session(session_id)
+  local fallback = type(active_provider) == 'function' and active_provider() or nil
+  if type(session_provider) == 'function' then
+    return session_provider(session_id, fallback)
+  end
+  return fallback
+end
 
 local input_modes = { 'ask', 'plan', 'agent', 'test', 'autopilot' }
 local session_label_max_len = 32
@@ -1617,6 +1628,18 @@ local function slash_command_completion_items(completion_request)
     return items
   end
 
+  if command == 'provider' then
+    local query = (completion_request.query or ''):lower()
+    for _, name in ipairs(session_mod.complete_provider(query) or {}) do
+      items[#items + 1] = {
+        word = '/provider ' .. name,
+        abbr = '/provider ' .. name,
+        menu = '[provider]',
+      }
+    end
+    return items
+  end
+
   if command == 'resume' then
     local query = (completion_request.query or ''):lower()
     for _, session in ipairs(discovered_session_items()) do
@@ -2590,7 +2613,7 @@ local function create_input_buffer()
           if err then
             cfg.notify('Failed to set permission mode: ' .. tostring(err), vim.log.levels.WARN)
           end
-        end)
+        end, { provider = provider_for_session(state.session_id) })
       end
     end
 

@@ -6,6 +6,7 @@ Below, **Plugin** means there is a working Neovim command/keymap/UI path now. **
 | ---------------------- | ----------- | ----------: | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | `/help`                | **Partial** |          No | `g?` in the chat buffer, `:help copilot-agent`, README command list                                                                       |
 | `/model`               | **Yes**     |     **Yes** | `:CopilotAgentModel`, `<M-m>`                                                                                                             |
+| `/provider`            | **Yes**     |          No | `:CopilotAgentProvider`                                                                                                                   |
 | `/resume`              | **Yes**     |     **Yes** | `:CopilotAgentSwitchSession`                                                                                                              |
 | `/rename`              | **Yes**     |          No | Rename the active session in plugin-local state                                                                                            |
 | `/new`                 | **Yes**     |     **Yes** | `:CopilotAgentNewSession`                                                                                                                 |

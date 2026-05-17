@@ -25,6 +25,9 @@ local log = logger.log
 local should_log = logger.should_log
 local serialize_log_value = logger.serialize_log_value
 local resolve_log_level = logger.resolve_log_level
+local active_provider = cfg.active_provider
+local session_provider = cfg.session_provider
+local session_model_key = cfg.session_model_key
 
 local decode_json = http.decode_json
 local request = http.request
@@ -71,6 +74,14 @@ local FLOAT_VERTICAL_BORDER_LINES = 2 -- Account for the rounded-border float fr
 local TURN_END_PROMPT_PREVIEW_CHARS = 200 -- Show enough of the prompt in turn-end logs to identify the completed request.
 local RECENT_ACTIVITY_LINE_MAX_CHARS = 120 -- Keep recent activity summaries compact enough for overlays and statusline-adjacent displays.
 local intentionally_stopped_event_jobs = {}
+
+local function provider_for_session(session_id)
+  local fallback = type(active_provider) == 'function' and active_provider() or nil
+  if type(session_provider) == 'function' then
+    return session_provider(session_id, fallback)
+  end
+  return fallback
+end
 local function sanitize_permission_text(text)
   if type(text) ~= 'string' then
     return nil
@@ -2163,7 +2174,7 @@ local function answer_permission(session_id, request_id, approved, callback)
     if err then
       notify('Failed to send permission answer: ' .. tostring(err), vim.log.levels.WARN)
     end
-  end)
+  end, { provider = provider_for_session(session_id) })
 end
 
 local function sync_model_state(model, reasoning_effort, session_id)
@@ -2172,7 +2183,12 @@ local function sync_model_state(model, reasoning_effort, session_id)
     state.config.session.model = model
     local active_session_id = type(session_id) == 'string' and session_id ~= '' and session_id or state.session_id
     if type(active_session_id) == 'string' and active_session_id ~= '' then
-      state.session_models[active_session_id] = model
+      local key = session_model_key(active_session_id, provider_for_session(active_session_id))
+      if key then
+        state.session_models[key] = model
+      else
+        state.session_models[active_session_id] = model
+      end
     end
   elseif model == '' or model == nil then
     state.current_model = nil
@@ -2213,7 +2229,7 @@ local function refresh_session_name_from_server(session_id)
       state.session_name = summary
       refresh_statuslines()
     end
-  end)
+  end, { provider = provider_for_session(session_id) })
 end
 
 local show_next_prompt
@@ -2396,7 +2412,7 @@ local function present_permission_picker(payload)
             notify('Permission mode set to approve-all for this session', vim.log.levels.INFO)
             refresh_statuslines()
           end
-        end)
+        end, { provider = provider_for_session(sid) })
       elseif allow_tool_choice and choice == allow_tool_choice then
         local ok, allow_err = approvals.allow_tool(perm)
         if not ok then

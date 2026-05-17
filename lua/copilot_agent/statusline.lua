@@ -9,6 +9,8 @@ local utils = require('copilot_agent.utils')
 local state = cfg.state
 local format_session_id = utils.format_session_id
 local truncate_session_summary = utils.truncate_session_summary
+local active_provider = cfg.active_provider
+local session_provider = cfg.session_provider
 
 local M = {}
 local _statusline_count_hl = '%#CopilotAgentStatuslineCount#'
@@ -23,6 +25,7 @@ local _statusline_component_defaults = {
   mode = true,
   permission = true,
   busy = true,
+  provider = true,
   session = true,
   model = true,
   tool = true,
@@ -69,6 +72,14 @@ local function statusline_component_enabled(name)
     return _statusline_component_defaults[name]
   end
   return value == true
+end
+
+local function provider_for_session(session_id)
+  local fallback = type(active_provider) == 'function' and active_provider() or nil
+  if type(session_provider) == 'function' then
+    return session_provider(session_id, fallback)
+  end
+  return fallback
 end
 
 local function statusline_part(name, producer, ...)
@@ -120,6 +131,14 @@ function M.statusline_model()
     label = label .. ' [' .. state.reasoning_effort .. ']'
   end
   return label
+end
+
+function M.statusline_provider()
+  local provider = provider_for_session(state.session_id)
+  if type(provider) ~= 'string' or provider == '' then
+    provider = 'copilot'
+  end
+  return 'provider: ' .. provider
 end
 
 local function active_background_task_count()
@@ -566,6 +585,7 @@ function M.statusline_component()
         statusline_part('mode', M.statusline_mode),
         statusline_part('permission', M.statusline_permission),
         statusline_part('busy', M.statusline_busy),
+        statusline_part('provider', M.statusline_provider),
         statusline_part('model', M.statusline_model),
         statusline_part('tool', M.statusline_tool),
         statusline_part('intent', M.statusline_intent),
@@ -609,6 +629,7 @@ function M.refresh_input_statusline()
         statusline_part('mode', M.statusline_mode),
         statusline_part('permission', M.statusline_permission),
         statusline_part('busy', M.statusline_busy),
+        statusline_part('provider', M.statusline_provider),
         statusline_part('model', M.statusline_model),
         statusline_part('tool', M.statusline_tool),
         statusline_part('intent', M.statusline_intent),
@@ -650,6 +671,7 @@ function M.refresh_chat_statusline()
       build_parts(
         statusline_part('mode', M.statusline_mode),
         statusline_part('busy', M.statusline_busy),
+        statusline_part('provider', M.statusline_provider),
         statusline_part('session', M.statusline_session, width),
         statusline_part('permission', M.statusline_permission),
         statusline_part('model', M.statusline_model),

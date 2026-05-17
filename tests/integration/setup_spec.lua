@@ -1463,6 +1463,7 @@ describe('user commands', function()
     'CopilotAgentDashboard',
     'CopilotAgentNewSession',
     'CopilotAgentSwitchSession',
+    'CopilotAgentProvider',
     'CopilotAgentDeleteSession',
     'CopilotAgentStart',
     'CopilotAgentServerStart',
@@ -2281,7 +2282,6 @@ describe('statusline API', function()
     local statusline = require('copilot_agent.statusline')
     local original_laststatus = vim.o.laststatus
     local expected_id = '#' .. expected_local_session_id('nvim', 1717245296):gsub('T', ' ', 1)
-    local expected_short_id = '#' .. expected_short_local_session_id('nvim', 1717245296)
     local original_get_width = vim.api.nvim_win_get_width
     local widths = {}
     agent.open_chat()
@@ -2291,6 +2291,7 @@ describe('statusline API', function()
 
     agent.state.session_id = 'nvim-1717245296789000000'
     agent.state.session_name = nil
+    agent.state.active_provider = 'claude'
     vim.o.laststatus = 1
     widths[chat_winid] = 200
     widths[input_winid] = 200
@@ -2299,6 +2300,8 @@ describe('statusline API', function()
     end
     statusline.refresh_chat_statusline()
     statusline.refresh_input_statusline()
+    assert_true(vim.wo[chat_winid].statusline:find('provider: claude', 1, true) ~= nil)
+    assert_true(vim.wo[input_winid].statusline:find('provider: claude', 1, true) ~= nil)
     assert_true(vim.wo[chat_winid].statusline:find('session: [' .. expected_id .. ']', 1, true) ~= nil)
     assert_true(vim.wo[input_winid].statusline:find('session: [' .. expected_id .. ']', 1, true) == nil)
 
@@ -2315,7 +2318,7 @@ describe('statusline API', function()
 
     widths[chat_winid] = 80
     statusline.refresh_chat_statusline()
-    assert_true(vim.wo[chat_winid].statusline:find('session: [' .. expected_short_id .. ']', 1, true) ~= nil)
+    assert_true(vim.wo[chat_winid].statusline:find('provider: claude', 1, true) ~= nil)
     assert_true(vim.wo[chat_winid].statusline:find('session: [abcdefghijklmnop', 1, true) == nil)
 
     agent.state.current_model = 'claude-opus-4.7'
@@ -2360,6 +2363,7 @@ describe('statusline plugin config', function()
           mode = true,
           permission = false,
           busy = true,
+          provider = false,
           session = true,
           model = false,
           tool = false,
@@ -2390,12 +2394,15 @@ describe('statusline plugin config', function()
 
     assert_true(vim.wo[chat_winid].statusline:find('session: [', 1, true) ~= nil)
     assert_true(vim.wo[chat_winid].statusline:find('✅ready', 1, true) ~= nil)
+    assert_true(vim.wo[chat_winid].statusline:find('provider:', 1, true) == nil)
     assert_true(vim.wo[chat_winid].statusline:find('✅approve-all', 1, true) == nil)
     assert_true(vim.wo[chat_winid].statusline:find('󱃕', 1, true) == nil)
     assert_true(vim.wo[input_winid].statusline:find('(g? for help)', 1, true) == nil)
     assert_true(vim.wo[input_winid].statusline:find('✅ready', 1, true) ~= nil)
+    assert_true(vim.wo[input_winid].statusline:find('provider:', 1, true) == nil)
     assert_true(agent.statusline():find('󱃕', 1, true) == nil)
     assert_true(agent.statusline():find('✅ready', 1, true) ~= nil)
+    assert_true(agent.statusline():find('provider:', 1, true) == nil)
 
     vim.o.columns = original_columns
     vim.o.laststatus = original_laststatus

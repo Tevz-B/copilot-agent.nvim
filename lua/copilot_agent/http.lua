@@ -13,6 +13,8 @@ local log = logger.log
 local should_log = logger.should_log
 local serialize_log_value = logger.serialize_log_value
 local normalize_base_url = cfg.normalize_base_url
+local active_provider = cfg.active_provider
+local provider_key = cfg.provider_key
 local is_connection_error = utils.is_connection_error
 
 local M = {}
@@ -50,8 +52,26 @@ local function effective_base_url(base_url_override)
   return base_url
 end
 
+local function resolve_provider_name(provider_override)
+  local override = provider_key(provider_override)
+  if override then
+    return override
+  end
+  return provider_key(type(active_provider) == 'function' and active_provider() or nil)
+end
+
+local function path_with_provider(path, provider_override)
+  local resolved_path = path
+  local provider_name = resolve_provider_name(provider_override)
+  if type(provider_name) == 'string' and provider_name ~= '' and type(resolved_path) == 'string' and resolved_path ~= '' and not resolved_path:find('provider=', 1, true) then
+    local separator = resolved_path:find('?', 1, true) and '&' or '?'
+    resolved_path = resolved_path .. separator .. 'provider=' .. provider_name
+  end
+  return resolved_path
+end
+
 function M.build_url(path, base_url_override)
-  return effective_base_url(base_url_override) .. path
+  return effective_base_url(base_url_override) .. (path or '')
 end
 
 local function has_base_url()
@@ -59,11 +79,21 @@ local function has_base_url()
   return type(base_url) == 'string' and base_url ~= ''
 end
 
-local function log_http_request(mode, method, path, body, base_url_override)
+local function log_http_request(mode, method, path, body, base_url_override, provider_override)
   if not should_log(vim.log.levels.DEBUG) then
     return
   end
-  log(string.format('http.%s request method=%s path=%s url=%s body=%s', mode, tostring(method), tostring(path), M.build_url(path, base_url_override), serialize_log_value(body)), vim.log.levels.DEBUG)
+  log(
+    string.format(
+      'http.%s request method=%s path=%s url=%s body=%s',
+      mode,
+      tostring(method),
+      tostring(path),
+      M.build_url(path_with_provider(path, provider_override), base_url_override),
+      serialize_log_value(body)
+    ),
+    vim.log.levels.DEBUG
+  )
 end
 
 local function log_http_response(mode, method, path, status, exit_code, payload, err)
@@ -146,7 +176,7 @@ function M.sync_request(method, path, body, opts)
     return nil, 'curl executable not found: ' .. state.config.curl_bin
   end
 
-  log_http_request('sync', method, path, body, opts.base_url)
+  log_http_request('sync', method, path, body, opts.base_url, opts.provider)
   local args = {
     state.config.curl_bin,
     '-sS',
@@ -156,7 +186,7 @@ function M.sync_request(method, path, body, opts)
     '\n%{http_code}',
     '-X',
     method,
-    M.build_url(path, opts.base_url),
+    M.build_url(path_with_provider(path, opts.provider), opts.base_url),
     '-H',
     'Accept: application/json',
   }
@@ -232,7 +262,7 @@ function M.raw_request(method, path, body, callback, opts)
     return
   end
 
-  log_http_request('async', method, path, body, opts.base_url)
+  log_http_request('async', method, path, body, opts.base_url, opts.provider)
   local stdout = {}
   local stderr = {}
   local args = {
@@ -244,7 +274,7 @@ function M.raw_request(method, path, body, callback, opts)
     '\n%{http_code}',
     '-X',
     method,
-    M.build_url(path, opts.base_url),
+    M.build_url(path_with_provider(path, opts.provider), opts.base_url),
     '-H',
     'Accept: application/json',
   }

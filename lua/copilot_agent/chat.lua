@@ -12,6 +12,8 @@ local selection = require('copilot_agent.selection')
 
 local state = cfg.state
 local notify = cfg.notify
+local active_provider = cfg.active_provider
+local session_provider = cfg.session_provider
 
 local request = http.request
 
@@ -33,6 +35,14 @@ local focus_activity_hover_preview = render.focus_activity_hover_preview
 local close_activity_hover_preview = render.close_activity_hover_preview
 
 local M = {}
+
+local function provider_for_session(session_id)
+  local fallback = type(active_provider) == 'function' and active_provider() or nil
+  if type(session_provider) == 'function' then
+    return session_provider(session_id, fallback)
+  end
+  return fallback
+end
 
 local function attach_chat_markdown(winid)
   win.disable_folds(winid)
@@ -948,7 +958,7 @@ function M.set_agent_mode(mode)
     if err then
       notify('Failed to set agent mode: ' .. err, vim.log.levels.WARN)
     end
-  end)
+  end, { provider = provider_for_session(state.session_id) })
 end
 
 -- Keymaps shared by both the chat output buffer and the input buffer.
@@ -1011,7 +1021,7 @@ function M.setup_action_keymaps(bufnr)
           if err then
             notify('Failed to set permission mode: ' .. tostring(err), vim.log.levels.WARN)
           end
-        end)
+        end, { provider = provider_for_session(state.session_id) })
       end
     end
 
@@ -1046,7 +1056,7 @@ function M.setup_action_keymaps(bufnr)
         if err then
           notify('Failed to set permission mode: ' .. tostring(err), vim.log.levels.WARN)
         end
-      end)
+      end, { provider = provider_for_session(state.session_id) })
     end
     refresh_statuslines()
     notify('Permission mode: ' .. next_mode, vim.log.levels.INFO)
@@ -1194,9 +1204,9 @@ function M.setup_action_keymaps(bufnr)
           else
             notify('Tools updated', vim.log.levels.INFO)
           end
-        end)
+        end, { provider = provider_for_session(state.session_id) })
       end)
-    end)
+    end, { provider = provider_for_session(state.session_id) })
   end, { buffer = bufnr, silent = true, desc = 'Configure session tools' })
 
   -- Help popup (g? in normal mode).
@@ -1318,6 +1328,7 @@ function M.ask(prompt, opts)
       end
 
       local function send_once()
+        local session_provider_name = provider_for_session(session_id)
         request('POST', string.format('/sessions/%s/messages', session_id), body, function(_, request_err)
           if request_err and is_session_not_attached_error(request_err) then
             -- Recover the session so the next user prompt will succeed, but do
@@ -1336,12 +1347,15 @@ function M.ask(prompt, opts)
           if included_restore_context then
             state.pending_session_context = nil
           end
-        end)
+        end, { provider = session_provider_name })
       end
 
       local pending_context = state.pending_session_context
       if type(pending_context) == 'table' and type(pending_context.text) == 'string' and pending_context.text ~= '' then
-        if pending_context.session_id == nil or pending_context.session_id == session_id then
+        local session_provider_name = provider_for_session(session_id)
+        local provider_matches = pending_context.provider == nil or pending_context.provider == session_provider_name
+        local session_matches = pending_context.session_id == nil or pending_context.session_id == session_id
+        if provider_matches and session_matches then
           prompt_body = table.concat({
             pending_context.text,
             '',

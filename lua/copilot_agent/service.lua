@@ -171,6 +171,23 @@ function M.service_command()
       value = vim.list_extend(vim.deepcopy(value), { '--port-range', pr })
     end
   end
+  local providers_config = state.config.service.providers_config
+  if type(providers_config) == 'function' then
+    providers_config = providers_config()
+  end
+  providers_config = type(providers_config) == 'string' and vim.trim(providers_config) or ''
+  if providers_config ~= '' and type(value) == 'table' then
+    local has_providers_config = false
+    for _, arg in ipairs(value) do
+      if arg == '--providers-config' or arg == '-providers-config' then
+        has_providers_config = true
+        break
+      end
+    end
+    if not has_providers_config then
+      value = vim.list_extend(vim.deepcopy(value), { '--providers-config', providers_config })
+    end
+  end
   if type(value) == 'table' then
     local has_log_file = false
     for _, arg in ipairs(value) do
@@ -856,13 +873,8 @@ local function shared_service_pid_alive()
     end
 
     local saved_addr = load_service_addr()
-    local control_ok = false
     local control_payload, control_err = control_request_sync('GET', '/healthz', nil)
-    if type(control_payload) == 'table' then
-      control_ok = true
-    elseif not control_err then
-      control_ok = true
-    end
+    local control_ok = type(control_payload) == 'table' or not control_err
     local has_saved_addr = saved_addr_healthy(saved_addr)
     if control_ok or has_saved_addr then
       return pid

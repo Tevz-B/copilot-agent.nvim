@@ -1038,7 +1038,7 @@ func TestLiveSessionSummariesOnlyIncludesAttachedSessions(t *testing.T) {
 		},
 	}
 
-	live := svc.liveSessionSummaries()
+	live := svc.liveSessionSummaries("")
 	if len(live) != 1 {
 		t.Fatalf("expected 1 attached session, got %d", len(live))
 	}
@@ -1208,7 +1208,7 @@ func TestHandleCreateSessionRestartsDeadClientAndRetries(t *testing.T) {
 	if freshClient.createSessionCalls != 1 {
 		t.Fatalf("expected replacement client create to be attempted once, got %d", freshClient.createSessionCalls)
 	}
-	if _, ok := svc.getManagedSession("session-123"); !ok {
+	if _, ok, _ := svc.getManagedSession("session-123", ""); !ok {
 		t.Fatal("expected retried session to be stored after recovery")
 	}
 }

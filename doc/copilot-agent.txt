@@ -437,6 +437,7 @@ resume.
 
   :CopilotAgentNewSession       Start a fresh session in the same directory
   :CopilotAgentSwitchSession    Pick from all persisted sessions and switch
+  :CopilotAgentProvider [name]  Switch the active provider and session
   :CopilotAgentDeleteSession    Delete a picked session by exact ID
   :CopilotAgentStop             Disconnect (session state persisted on disk)
   :CopilotAgentStop!            Delete active session; checkpoints kept 7 days
@@ -449,7 +450,7 @@ Sessions are auto-named by the SDK after the first conversation turn. You
 can rename a session by typing `/rename My Session Name` in the input
 buffer.
 
-The active session summary and short session ID are shown in the
+The active provider, session summary, and short session ID are shown in the
 chat/output statusline. Transcript separators between turns also render the
 completed-turn checkpoint label (for example `v001`) as a virtual rule so it is easy to copy for rewind or recovery
 workflows. See |copilot-agent-statusline|.
@@ -493,6 +494,7 @@ Each function returns a short display string and is safe to call at any time.
   require("copilot_agent").statusline_mode()        -- [ask] / [plan] / [agent] / [autopilot]
   require("copilot_agent").statusline_model()       -- claude-sonnet-4.6
   require("copilot_agent").statusline_busy()        -- ✅ready / ⏳working / 📝sync / 🧩2 tasks / ❓input
+  require("copilot_agent").statusline_provider()    -- copilot / claude / custom provider key
   require("copilot_agent").statusline_permission()  -- 🔐interactive / ✅approve-all / …
   require("copilot_agent").statusline_attachments() -- 📎3 (only when N > 0)
   require("copilot_agent").statusline_tool()        -- 🔧 read_file (active tool)
@@ -506,6 +508,7 @@ lualine example: >lua
         require("copilot_agent").statusline_mode,
         require("copilot_agent").statusline_model,
         require("copilot_agent").statusline_busy,
+        require("copilot_agent").statusline_provider,
         require("copilot_agent").statusline_permission,
         require("copilot_agent").statusline_attachments,
       }
@@ -796,6 +799,10 @@ new_session()                             *copilot-agent.new_session()*
 switch_session()                          *copilot-agent.switch_session()*
   Show a picker of all persisted sessions and switch to the selected one.
   See |:CopilotAgentSwitchSession|.
+
+switch_provider({name})                  *copilot-agent.switch_provider()*
+  Switch to a configured provider. Without {name}, opens a picker.
+  See |:CopilotAgentProvider|.
 
 delete_session()                          *copilot-agent.delete_session()*
   Show a picker of all persisted sessions and delete the selected one.

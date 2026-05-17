@@ -26,6 +26,8 @@ local window = require('copilot_agent.window')
 local state = cfg.state
 local notify = cfg.notify
 local log = cfg.log
+local active_provider = cfg.active_provider
+local session_provider = cfg.session_provider
 local append_entry = render.append_entry
 local open_todo_float = render.open_todo_float
 local refresh_statuslines = sl.refresh_statuslines
@@ -55,6 +57,14 @@ local mode_permission = {
 }
 local set_input_mode
 local plan_mode_command
+
+local function provider_for_session(session_id)
+  local fallback = type(active_provider) == 'function' and active_provider() or nil
+  if type(session_provider) == 'function' then
+    return session_provider(session_id, fallback)
+  end
+  return fallback
+end
 
 local function parse(text)
   if type(text) ~= 'string' then
@@ -481,6 +491,16 @@ local function select_model_command(args)
   return true
 end
 
+local function provider_command(args)
+  args = vim.trim(args or '')
+  if args ~= '' then
+    session.switch_provider(args)
+    return true
+  end
+  session.switch_provider()
+  return true
+end
+
 local function resume_session_command(args)
   if args ~= '' then
     session.switch_to_session_id(args)
@@ -790,7 +810,7 @@ local function session_info_command(args)
           return
         end
         render_session_info(target, response)
-      end)
+      end, { provider = provider_for_session(target.session_id) })
       return
     end
 
@@ -1283,7 +1303,7 @@ set_input_mode = function(mode)
         if err then
           notify('Failed to set permission mode: ' .. tostring(err), vim.log.levels.WARN)
         end
-      end)
+      end, { provider = provider_for_session(state.session_id) })
     end
   end
 
@@ -1318,7 +1338,7 @@ local function allow_all_command()
       if err then
         append_entry('error', 'Failed to set permission mode: ' .. tostring(err))
       end
-    end)
+    end, { provider = provider_for_session(state.session_id) })
   end
   refresh_statuslines()
   append_entry('system', 'Permission mode: ' .. next_mode)
@@ -3815,6 +3835,7 @@ local handlers = {
   mcp = mcp_command,
   ['new'] = new_session_command,
   model = select_model_command,
+  provider = provider_command,
   mode = set_input_mode,
   plan = plan_mode_command,
   rename = rename_session,

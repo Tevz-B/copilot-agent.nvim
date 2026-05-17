@@ -88,7 +88,7 @@ The HTTP bridge and the LSP helper are separate processes. The HTTP service owns
 | Model switching (live)    | ✅ mid-session switching                                              | ❓                        |
 | LSP code actions          | ✅ (explain / fix / add tests / add docs)                             | ❌                        |
 | MCP support               | ✅                                                                    | ❓                        |
-| Multi-provider            | ❌ (Copilot only, or Bring your own key)                              | ✅ (provider_resolver)    |
+| Multi-provider            | ✅ (configured Copilot/Claude providers)                              | ✅ (provider_resolver)    |
 | Dependencies              | codepilot-cli + go server                                             | Pure Lua                  |
 
 The model picker shows each model's billing multiplier when the SDK provides one.
@@ -114,7 +114,7 @@ The model picker shows each model's billing multiplier when the SDK provides one
 | ----------------------------- | ------------------------------------------------ | ----------------------------------------- | -------------------------------------- |
 | Agent backend                 | Copilot SDK (Go, embedded)                       | ACP CLI agents or direct LLM adapters     | ACP CLI agents or direct LLM adapters  |
 | ACP support                   | ❌ (no plan)                                     | ✅ (Claude Code, Codex, Copilot CLI, …)   | ✅ (Zen Mode)                          |
-| Multi-provider / BYO API key  | ❌ (Copilot only)                                | ✅ (Anthropic, OpenAI, Gemini, Ollama, …) | ✅ (Claude, OpenAI, Gemini, Ollama, …) |
+| Multi-provider / BYO API key  | ✅ (configured Copilot/Claude providers)      | ✅ (Anthropic, OpenAI, Gemini, Ollama, …) | ✅ (Claude, OpenAI, Gemini, Ollama, …) |
 | Tool-call execution           | SDK built-ins (file, terminal, web, ask_user …)  | Lua tools + ACP agent tools               | Rust tools + ACP agent tools           |
 | Sub-agent / streaming events  | ✅ SDK-native                                    | ❌                                        | ❌                                     |
 | MCP, agents & skill discovery | ✅                                               | ❌                                        | ❌                                     |
@@ -228,12 +228,17 @@ For most users, this minimal setup is enough:
         history_preview_chars = 120,    -- truncation length for summarized historical activity/tool outputs
         auto_resume = "prompt",  -- "prompt" (default) | "auto" — when multiple sessions exist
       },
+      providers = {
+        active = nil,              -- current provider; nil falls back to the service default
+        handoff_on_switch = true,   -- queue a one-shot context handoff when switching providers
+      },
       service = {
         auto_start = true,
         -- command = nil means auto: uses <plugin_root>/bin/copilot-agent if present,
         -- otherwise falls back to { "go", "run", "." } (requires Go toolchain).
         command = nil,
         cwd = nil,                         -- defaults to <plugin_root>/server
+        providers_config = nil,            -- optional YAML file with multiple named providers
         detach = true,                     -- default: reuse one detached background service across Neovim instances
         port_range = nil,                  -- e.g. "18000-19000" for fixed range
         log = {
@@ -383,6 +388,7 @@ Use `:CopilotAgentDashboard` or `:CopilotAgentChat` to get started.
 | `:CopilotAgentSendBuffer`            | Send the active compose buffer                                                                                                 |
 | `:CopilotAgentNewSession`            | Disconnect current session and start a fresh one                                                                               |
 | `:CopilotAgentSwitchSession`         | Pick from all persisted sessions and switch                                                                                    |
+| `:CopilotAgentProvider [name]`       | Switch the active provider and resume/create its session                                                                       |
 | `:CopilotAgentDeleteSession`         | Pick a session by summary + exact ID and delete it                                                                             |
 | `:CopilotAgentModel [id]`            | Pick or set a model; tab-completes from service model list                                                                     |
 | `:CopilotAgentStart`                 | Start the Go service with the current config                                                                                   |
@@ -641,7 +647,7 @@ require("copilot_agent").setup({
 })
 ```
 
-You can choose which components are rendered with `statusline.components` (default: all enabled). Supported component keys are: `mode`, `permission`, `busy`, `session`, `model`, `tool`, `intent`, `context`, `config`, `attachments`, `help`.
+You can choose which components are rendered with `statusline.components` (default: all enabled). Supported component keys are: `mode`, `permission`, `busy`, `provider`, `session`, `model`, `tool`, `intent`, `context`, `config`, `attachments`, `help`.
 
 ```lua
 require("copilot_agent").setup({
@@ -650,6 +656,7 @@ require("copilot_agent").setup({
     components = {
       mode = true,
       busy = true,
+      provider = true,
       session = true,
       permission = false,
       model = false,
@@ -668,13 +675,13 @@ When enabled, default examples:
 
 ```text
 input window
-🤖agent (loop·approve-all)  ✅approve-all  ✅ready  default  󱃕 Instruction: 0  󱜙 Agent: 0 󱨚 Skill: 0  MCP: 0  (g? for help)
+🤖agent (loop·approve-all)  ✅approve-all  ✅ready  provider: copilot  default  󱃕 Instruction: 0 󱜙 Agent: 0 󱨚 Skill: 0  MCP: 0  (g? for help)
 
 chat window
-🤖agent (loop·approve-all)  ✅approve-all  ✅ready  default  󱃕 Instruction: 0 󱜙 Agent: 0 󱨚 Skill: 0  MCP: 0  session: [#project name 20260501 0905]
+🤖agent (loop·approve-all)  ✅approve-all  ✅ready  provider: copilot  default  󱃕 Instruction: 0 󱜙 Agent: 0 󱨚 Skill: 0  MCP: 0  session: [#project name 20260501 0905]
 ```
 
-As the session becomes active, the statusline updates live with readiness (`⏳working`, `📝sync`, `🧩2 tasks`, `❓input`, `✅ready`), the current tool/intent, context tokens, quota remaining from `assistant.usage` events, pending attachments, and the active session label.
+As the session becomes active, the statusline updates live with readiness (`⏳working`, `📝sync`, `🧩2 tasks`, `❓input`, `✅ready`), the active provider, the current tool/intent, context tokens, quota remaining from `assistant.usage` events, pending attachments, and the active session label.
 
 ### Use statusline API
 
@@ -682,15 +689,16 @@ As the session becomes active, the statusline updates live with readiness (`⏳w
 -- lualine
 require("lualine").setup {
   sections = {
-    lualine_x = {
-      require("copilot_agent").statusline_mode,        -- [ask] / [plan] / [agent] / [autopilot]
-      require("copilot_agent").statusline_model,       -- claude-sonnet-4.6 / default
-      require("copilot_agent").statusline_busy,        -- ✅ready / ⏳working / 📝sync / 🧩2 tasks / ❓input
-      require("copilot_agent").statusline_permission,  -- 🔐interactive / ✅approve-all / 🤖autopilot
-      require("copilot_agent").statusline_attachments, -- 📎3 (when attachments pending)
-      require("copilot_agent").statusline_tool,        -- 🔧 read_file (active tool)
-      require("copilot_agent").statusline_intent,      -- current agent intent
-      require("copilot_agent").statusline_context,     -- 12k/200k plus quota remaining when available
+      lualine_x = {
+        require("copilot_agent").statusline_mode,        -- [ask] / [plan] / [agent] / [autopilot]
+        require("copilot_agent").statusline_model,       -- claude-sonnet-4.6 / default
+        require("copilot_agent").statusline_busy,        -- ✅ready / ⏳working / 📝sync / 🧩2 tasks / ❓input
+        require("copilot_agent").statusline_provider,    -- copilot / claude / custom provider key
+        require("copilot_agent").statusline_permission,  -- 🔐interactive / ✅approve-all / 🤖autopilot
+        require("copilot_agent").statusline_attachments, -- 📎3 (when attachments pending)
+        require("copilot_agent").statusline_tool,        -- 🔧 read_file (active tool)
+        require("copilot_agent").statusline_intent,      -- current agent intent
+        require("copilot_agent").statusline_context,     -- 12k/200k plus quota remaining when available
     }
   }
 }
@@ -709,7 +717,7 @@ Sessions are auto-named by the SDK after the first conversation turn. You can re
 
 When a session is deleted, its checkpoint git worktree is soft-deleted instead of being removed immediately. This applies both to `:CopilotAgentDeleteSession` and `:CopilotAgentStop!`. The checkpoint metadata records the deletion time and the worktree is pruned automatically after 7 days on the next plugin startup or checkpoint/session lifecycle operation.
 
-When plugin-managed statuslines are enabled, the chat/output statusline shows the active session summary together with its short session ID, and transcript separators between turns render the completed-turn checkpoint label (`v001`, `v002`, ...) as a virtual rule so you can copy it for rewind/recovery workflows without opening the input buffer.
+When plugin-managed statuslines are enabled, the chat/output statusline shows the active provider, session summary, and short session ID, and transcript separators between turns render the completed-turn checkpoint label (`v001`, `v002`, ...) as a virtual rule so you can copy it for rewind/recovery workflows without opening the input buffer.
 
 **Session selection behaviour:**
 

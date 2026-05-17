@@ -187,10 +187,16 @@ function M.setup(opts)
   state.chat_tail_spacer_lines = 0
   state.chat_default_conceallevel = nil
   state._rendered_line_count = nil
+  state.pending_session_context = nil
   state.reasoning_entry_key = nil
   state.reasoning_text = ''
   state.reasoning_lines = {}
   state.last_assistant_usage = nil
+  state.current_model = nil
+  state.active_provider = nil
+  state.provider_cache = {}
+  state.provider_sessions = {}
+  state.session_models = {}
   state.dashboard_winid = nil
   state.dashboard_prompt_bufnr = nil
   state.dashboard_prompt_winid = nil
@@ -393,6 +399,14 @@ end
 
 function M.switch_session()
   session.switch_session()
+end
+
+function M.switch_provider(provider)
+  session.switch_provider(provider)
+end
+
+function M.complete_provider(arglead)
+  return session.complete_provider(arglead)
 end
 
 function M.delete_session()

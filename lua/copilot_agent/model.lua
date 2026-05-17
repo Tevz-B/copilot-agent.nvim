@@ -13,6 +13,9 @@ local render = require('copilot_agent.render')
 
 local state = cfg.state
 local notify = cfg.notify
+local active_provider = cfg.active_provider
+local session_model_key = cfg.session_model_key
+local session_provider = cfg.session_provider
 
 local request = http.request
 local sync_request = http.sync_request
@@ -29,6 +32,12 @@ local append_entry = render.append_entry
 
 local M = {}
 
+local function provider_label()
+  local name = type(active_provider) == 'function' and active_provider() or nil
+  name = type(name) == 'string' and name ~= '' and name or 'provider'
+  return name:sub(1, 1):upper() .. name:sub(2)
+end
+
 local function deferred_select(items, opts, on_choice)
   -- Some vim.ui.select providers close or recycle popup windows on a short
   -- defer. Opening model pickers through the same defer window avoids guihua
@@ -40,7 +49,11 @@ local function deferred_select(items, opts, on_choice)
 end
 
 local function model_picker_label(item)
-  local label = item.label
+  if type(item) ~= 'table' then
+    return tostring(item or '')
+  end
+
+  local label = item.label or item.name or item.id or ''
   if item.supports_reasoning and #(item.supported_efforts or {}) > 0 then
     label = label .. ' 🧠'
   end
@@ -192,7 +205,7 @@ function M.apply_model(model, callback, opts)
       local um = unavailable_model_from_error(err)
       if um and opts.model_selection_attempts ~= false then
         append_entry('system', string.format('Model "%s" is unavailable; choose a supported model.', um))
-        M.prompt_supported_model_selection(um, 'Select a supported Copilot model', function(reselected_model, prompt_err)
+        M.prompt_supported_model_selection(um, 'Select a supported ' .. provider_label() .. ' model', function(reselected_model, prompt_err)
           if prompt_err then
             if callback then
               callback(nil, prompt_err)
@@ -214,7 +227,10 @@ function M.apply_model(model, callback, opts)
     state.current_model = active_model
     state.config.session.model = active_model
     if state.session_id and state.session_id ~= '' then
-      state.session_models[state.session_id] = active_model
+      local key = session_model_key(state.session_id, session_provider(state.session_id, type(active_provider) == 'function' and active_provider() or nil))
+      if key then
+        state.session_models[key] = active_model
+      end
     end
     local msg = 'Active model: ' .. active_model
     if opts.reasoning_effort and opts.reasoning_effort ~= '' then
@@ -228,7 +244,9 @@ function M.apply_model(model, callback, opts)
     if callback then
       callback(active_model, nil)
     end
-  end)
+  end, {
+    provider = session_provider(state.session_id, type(active_provider) == 'function' and active_provider() or nil),
+  })
 end
 
 --- Interactive model picker with reasoning effort support.
@@ -254,7 +272,7 @@ function M.select_model(model)
     end
 
     deferred_select(models, {
-      prompt = 'Select Copilot model',
+      prompt = 'Select ' .. provider_label() .. ' model',
       format_item = model_picker_label,
     }, function(choice)
       if not choice then

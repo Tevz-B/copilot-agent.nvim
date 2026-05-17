@@ -8,6 +8,11 @@ cd server/
 # Development — OS assigns a free port; actual address printed to stderr
 go run .
 
+# Use Claude provider (experimental)
+ANTHROPIC_API_KEY=your_key_here \
+go run . \
+  -provider claude
+
 # Pin to a specific port (useful for curl testing)
 go run . \
   -addr 127.0.0.1:8088 \
@@ -30,12 +35,15 @@ go build -o copilot-agent .
 
 | Flag          | Default       | Description                                           |
 | ------------- | ------------- | ----------------------------------------------------- |
+| `-provider`   | `copilot`     | Backend provider (`copilot` or `claude`)             |
 | `-addr`       | (free port)   | HTTP listen address; empty or `:0` → OS picks         |
 | `-port-range` | —             | Try ports lo–hi (e.g. `18000-19000`); first free wins |
 | `-cwd`        | current dir   | Default working directory for sessions                |
 | `-model`      | (sdk default) | Default model for new sessions                        |
 | `-cli-path`   | auto-detected | Path to Copilot CLI binary/JS entrypoint              |
 | `-cli-url`    | —             | URL of an already-running Copilot CLI server          |
+| `-claude-cli-path` | — | Deprecated; ignored when `-provider claude` is used |
+| `-providers-config` | — | YAML file with multiple named providers and a default |
 | `-log-level`  | —             | Copilot CLI log level                                 |
 | `-log-file`   | stderr only   | Mirror service logs to a file with INFO/WARN/ERROR prefixes |
 | `-lsp`        | `true`        | Start LSP server on stdio                             |
@@ -45,6 +53,36 @@ go build -o copilot-agent .
 The service always prints `COPILOT_AGENT_ADDR=127.0.0.1:<PORT>` to stderr once the
 listener is bound. When `auto_start = true`, the plugin reads this line and
 configures its HTTP client automatically — no manual `base_url` needed.
+
+When `-provider claude` is enabled, the server uses `anthropic-sdk-go` directly.
+Set `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`) in the environment before
+starting the service. Initial support focuses on `POST /sessions`,
+`POST /sessions/{id}/messages`, `GET /sessions/{id}/events`, and the core
+session lifecycle endpoints; advanced Copilot-specific endpoints such as
+fleet/compact are not available yet.
+
+### Multiple providers
+
+Use `-providers-config` to point the server at a YAML file with multiple named
+providers:
+
+```yaml
+default_provider: copilot
+providers:
+  - name: copilot
+    type: copilot
+  - name: claude
+    type: claude
+    model: claude-sonnet-4.6
+    claude:
+      api_key_env: ANTHROPIC_API_KEY
+      auth_token_env: ANTHROPIC_AUTH_TOKEN
+      base_url: https://api.anthropic.com
+```
+
+The Neovim plugin can then switch providers with `:CopilotAgentProvider`. When
+you switch providers, the plugin resumes that provider's session or creates a
+new one and queues a one-shot context handoff for the next prompt.
 
 Service log lines are prefixed with `[INFO]`, `[WARN]`, or `[ERROR]` when
 `-log-file` is set.

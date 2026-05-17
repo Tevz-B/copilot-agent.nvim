@@ -27,6 +27,7 @@ local defaults = {
     command = nil, -- nil = auto-detect installed binary, then fall back to 'go run .'
     cwd = nil, -- defaults to <plugin_root>/server
     env = nil,
+    providers_config = nil, -- optional YAML file passed as --providers-config to enable multiple named providers
     port_range = nil, -- e.g. '18000-19000'; appended as --port-range when set
     log = {
       enabled = false, -- When true, pass --log-file to the Go service.
@@ -154,6 +155,10 @@ local defaults = {
     -- 'auto': silently resume the most recent matching session without prompting.
     auto_resume = 'prompt',
   },
+  providers = {
+    active = nil, -- current provider name (nil = service default provider)
+    handoff_on_switch = true, -- include a one-shot context handoff when switching providers
+  },
   lsp = {
     enabled = false,
   },
@@ -209,6 +214,9 @@ local state = {
   input_mode = 'agent', -- 'ask' | 'plan' | 'agent' | 'test' | 'autopilot'
   reasoning_effort = nil, -- current reasoning effort level (nil = model default)
   permission_mode = 'interactive', -- 'interactive' | 'approve-all' | 'autopilot'
+  active_provider = nil, -- currently selected provider name (copilot/claude or custom provider key)
+  provider_cache = {}, -- provider descriptors from GET /providers
+  provider_sessions = {}, -- most recent attached session id by provider key
   session_name = nil, -- auto-generated name from SDK (updated after each turn)
   session_working_directory = nil, -- working directory bound to the active session
   pending_attachments = {}, -- list of {type, path, display} waiting to be sent
@@ -246,7 +254,7 @@ local state = {
   background_tasks = {}, -- non-terminal background/subagent tasks still in flight
   -- Live agent activity (updated from SSE events, shown in statusline)
   current_model = nil, -- model ID for the currently attached session
-  session_models = {}, -- per-session model cache keyed by sessionId
+  session_models = {}, -- per-session model cache keyed by provider::sessionId
   active_tool = nil, -- name of currently executing tool (nil when idle)
   active_tool_run_id = nil, -- overlay queue id for the currently executing shell tool
   active_tool_detail = nil, -- detailed command/description for the active tool overlay
@@ -303,6 +311,7 @@ local state = {
 local SLASH_COMMANDS = {
   { word = '/help', info = 'Show help for interactive commands' },
   { word = '/model', info = 'Select AI model to use' },
+  { word = '/provider', info = 'Switch provider or pick from configured providers' },
   { word = '/resume', info = 'Switch to a different session' },
   { word = '/rename', info = 'Rename the current session' },
   { word = '/new', info = 'Start a new conversation' },
@@ -349,12 +358,81 @@ local function normalize_base_url(url)
   return utils.normalize_base_url(url, fallback)
 end
 
-local function active_session_model(session_id)
+local function provider_key(provider)
+  if type(provider) ~= 'string' then
+    return nil
+  end
+  local normalized = vim.trim(provider):lower()
+  if normalized == '' then
+    return nil
+  end
+  return normalized
+end
+
+local function active_provider()
+  local selected = provider_key(state.active_provider)
+  if selected then
+    return selected
+  end
+  local configured = state.config and state.config.providers and state.config.providers.active or nil
+  selected = provider_key(configured)
+  if selected then
+    return selected
+  end
+  selected = provider_key(state.config and state.config.provider or nil)
+  if selected then
+    return selected
+  end
+  return 'copilot'
+end
+
+local function session_model_key(session_id, provider)
+  if type(session_id) ~= 'string' or session_id == '' then
+    return nil
+  end
+  local provider_name = provider_key(provider) or active_provider()
+  return provider_name .. '::' .. session_id
+end
+
+local function bind_session_provider(session_id, provider)
+  if type(session_id) ~= 'string' or session_id == '' then
+    return nil
+  end
+  local provider_name = provider_key(provider) or active_provider()
+  if type(state.provider_sessions) ~= 'table' then
+    state.provider_sessions = {}
+  end
+  state.provider_sessions[provider_name] = session_id
+  return provider_name
+end
+
+local function session_provider(session_id, fallback_provider)
+  if type(session_id) ~= 'string' or session_id == '' then
+    return provider_key(fallback_provider) or active_provider()
+  end
+  local direct = provider_key(fallback_provider)
+  if direct then
+    return direct
+  end
+  local matched = nil
+  for provider_name, remembered_session_id in pairs(state.provider_sessions or {}) do
+    if remembered_session_id == session_id then
+      if matched and matched ~= provider_name then
+        return active_provider()
+      end
+      matched = provider_name
+    end
+  end
+  return matched or active_provider()
+end
+
+local function active_session_model(session_id, provider)
   local active_session_id = type(session_id) == 'string' and session_id or state.session_id
   if type(active_session_id) == 'string' and active_session_id ~= '' then
     local models = state.session_models
     if type(models) == 'table' then
-      local model = models[active_session_id]
+      local key = session_model_key(active_session_id, session_provider(active_session_id, provider))
+      local model = key and models[key] or nil
       if type(model) == 'string' and model ~= '' then
         return model
       end
@@ -383,5 +461,10 @@ return {
   should_log = logging.should_log,
   serialize_log_value = logging.serialize_log_value,
   normalize_base_url = normalize_base_url,
+  provider_key = provider_key,
+  active_provider = active_provider,
+  session_model_key = session_model_key,
+  session_provider = session_provider,
+  bind_session_provider = bind_session_provider,
   active_session_model = active_session_model,
 }

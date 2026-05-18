@@ -38,7 +38,7 @@ local defaults = {
     -- the detached service when the last Neovim instance exits.
     detach = true,
     healthcheck_path = '/healthz',
-    startup_timeout_ms = 15000,
+    startup_timeout_ms = 5000,
     startup_poll_interval_ms = 250,
     client_heartbeat_interval_ms = 10000,
   },

@@ -22,6 +22,7 @@ local CONTROL_REQUEST_TIMEOUT_SECONDS = '2' -- Bound local control-socket curl c
 local SAVED_ADDR_PROBE_TIMEOUT_SECONDS = '1' -- Quick probe timeout when validating persisted service addresses.
 local STALE_ADDR_FAILURE_THRESHOLD = 3 -- After this many consecutive health-check failures on the same discovered address, force a fresh restart.
 local DEFAULT_CLIENT_HEARTBEAT_INTERVAL_MS = 10000 -- Refresh client registration periodically so detached idle shutdown never races active chat use.
+local MAX_STARTUP_TIMEOUT_MS = 5000 -- Keep startup waits bounded so failed peer starts recover quickly.
 local DEFAULT_SERVICE_LOG_PATH = vim.fn.stdpath('state') .. '/copilot-agent-service.log'
 local DEFAULT_CLIENT_ID_LENGTH = 32
 
@@ -663,6 +664,7 @@ end
 local function interval_settings()
   local timeout_ms = tonumber(state.config.service.startup_timeout_ms) or defaults.service.startup_timeout_ms
   local interval_ms = tonumber(state.config.service.startup_poll_interval_ms) or defaults.service.startup_poll_interval_ms
+  timeout_ms = math.max(1000, math.min(timeout_ms, MAX_STARTUP_TIMEOUT_MS))
   return timeout_ms, interval_ms
 end
 
@@ -873,8 +875,11 @@ local function shared_service_pid_alive()
     end
 
     local saved_addr = load_service_addr()
+    local control_ok = false
     local control_payload, control_err = control_request_sync('GET', '/healthz', nil)
-    local control_ok = type(control_payload) == 'table' or not control_err
+    if type(control_payload) == 'table' or not control_err then
+      control_ok = true
+    end
     local has_saved_addr = saved_addr_healthy(saved_addr)
     if control_ok or has_saved_addr then
       return pid
@@ -1151,6 +1156,23 @@ refresh_service_addr_from_state = function()
   return false
 end
 
+local function lock_owner_pid()
+  local ok, pid = pcall(function()
+    local f = io.open(addr_lock_owner_file(), 'r')
+    if not f then
+      return nil
+    end
+    f:read('*l') -- started_at_ms
+    local line = f:read('*l')
+    f:close()
+    if type(line) == 'string' and line:find('^%d+$') then
+      return tonumber(line)
+    end
+    return nil
+  end)
+  return ok and pid or nil
+end
+
 local function release_spawn_lock()
   pcall(uv.fs_unlink, addr_lock_owner_file())
   pcall(uv.fs_rmdir, addr_lock_dir())
@@ -1171,6 +1193,24 @@ local function try_acquire_spawn_lock(stale_after_ms)
   local message = tostring(err or '')
   if not message:find('EEXIST', 1, true) then
     return nil, 'failed to create service lock: ' .. message
+  end
+
+  local owner_pid = lock_owner_pid()
+  if owner_pid and not process_exists(owner_pid) then
+    release_spawn_lock()
+    ok, err = uv.fs_mkdir(addr_lock_dir(), LOCK_DIRECTORY_MODE)
+    if ok then
+      local write_ok, write_err = write_text_file(addr_lock_owner_file(), string.format('%d\n%d\n', now_ms(), vim.fn.getpid()))
+      if not write_ok then
+        release_spawn_lock()
+        return nil, 'failed to write service lock metadata: ' .. tostring(write_err)
+      end
+      return true
+    end
+    message = tostring(err or '')
+    if not message:find('EEXIST', 1, true) then
+      return nil, 'failed to create service lock: ' .. message
+    end
   end
 
   local started_at_ms = lock_started_at_ms()
@@ -1494,6 +1534,16 @@ local function start_service_sequence(callback)
       -- appears alive, it may be serving a stale control socket with a
       -- dead HTTP address.
       if now_ms() >= deadline_ms then
+        local acquired, acquire_err = try_acquire_spawn_lock(0)
+        if acquire_err then
+          finish(acquire_err)
+          return
+        end
+        if acquired then
+          spawn_lock_owned = true
+          start_service_with_lock()
+          return
+        end
         finish('timed out waiting for another Neovim instance to start the service')
         return
       end
@@ -1503,7 +1553,7 @@ local function start_service_sequence(callback)
         return
       end
 
-      local acquired, acquire_err = try_acquire_spawn_lock(math.max(timeout_ms * 4, 60000))
+      local acquired, acquire_err = try_acquire_spawn_lock(timeout_ms)
       if acquire_err then
         finish(acquire_err)
         return

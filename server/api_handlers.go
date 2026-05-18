@@ -103,6 +103,13 @@ func (s *service) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 					} else {
 						logErrorf("session %s: failed to apply requested model %q on re-attach: %v", req.SessionID, resolvedModel, setErr)
 					}
+				} else if isClaudeProviderType(providerRuntime.Type) {
+					existing.model = resolvedModel
+					existing.broadcastHostEvent("host.model_changed", map[string]any{
+						"sessionId": req.SessionID,
+						"provider":  existing.provider,
+						"model":     resolvedModel,
+					})
 				}
 			}
 		}

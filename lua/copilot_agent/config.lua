@@ -369,6 +369,14 @@ local function active_session_model(session_id)
     if active_session_id == state.session_id and type(state.current_model) == 'string' and state.current_model ~= '' then
       return state.current_model
     end
+    -- Check persisted model store (survives Neovim restarts).
+    local ok_store, store = pcall(require, 'copilot_agent.session_models')
+    if ok_store and store then
+      local persisted = store.get(active_session_id)
+      if type(persisted) == 'string' and persisted ~= '' then
+        return persisted
+      end
+    end
   end
 
   local session_model = state.config and state.config.session and state.config.session.model

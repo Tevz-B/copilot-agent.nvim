@@ -532,6 +532,19 @@ function M.resume_session(session_id, callback, opts)
     end
     start_event_stream(state.session_id)
     on_session_ready(state.session_id)
+    -- If the server returned a different model than what was requested (e.g. an
+    -- older service that doesn't sync model on re-attach), explicitly switch.
+    if requested_model and requested_model ~= '' then
+      local response_model = type(response and response.model) == 'string' and response.model or ''
+      if response_model ~= '' and response_model ~= requested_model then
+        log(string.format('resume_session model mismatch: requested=%s response=%s, applying explicit switch', requested_model, response_model), vim.log.levels.DEBUG)
+        model.apply_model(requested_model, function(_, apply_err)
+          if apply_err then
+            log('resume_session model switch failed: ' .. apply_err, vim.log.levels.WARN)
+          end
+        end)
+      end
+    end
     if callback then
       callback(state.session_id, nil)
     end

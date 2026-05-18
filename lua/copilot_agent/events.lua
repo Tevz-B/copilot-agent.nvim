@@ -2171,7 +2171,13 @@ local function sync_model_state(model, reasoning_effort, session_id)
     state.current_model = model
     local active_session_id = type(session_id) == 'string' and session_id ~= '' and session_id or state.session_id
     if type(active_session_id) == 'string' and active_session_id ~= '' then
-      state.session_models[active_session_id] = model
+      local key = session_model_key(active_session_id, provider_for_session(active_session_id))
+      if key then
+        state.session_models[key] = model
+      else
+        state.session_models[active_session_id] = model
+      end
+      require('copilot_agent.session_models').set(active_session_id, model)
     end
   elseif model == '' or model == nil then
     state.current_model = nil

@@ -14,6 +14,14 @@ local session_models_store = require('copilot_agent.session_models')
 
 local state = cfg.state
 local notify = cfg.notify
+local active_provider = cfg.active_provider
+local session_model_key = cfg.session_model_key or function(session_id)
+  if type(session_id) ~= 'string' or session_id == '' then
+    return nil
+  end
+  return session_id
+end
+local session_provider = cfg.session_provider
 
 local request = http.request
 local sync_request = http.sync_request

@@ -18,6 +18,15 @@ local checkpoint_diff = require('copilot_agent.checkpoint_diff')
 local window = require('copilot_agent.window')
 local apply_patch = require('copilot_agent.apply_patch')
 local log_content_length = cfg.log_content_length
+local session_model_key = cfg.session_model_key or function(session_id)
+  if type(session_id) ~= 'string' or session_id == '' then
+    return nil
+  end
+  return session_id
+end
+local provider_for_session = cfg.session_provider or function()
+  return 'copilot'
+end
 
 local state = cfg.state
 local notify = cfg.notify

@@ -18,6 +18,26 @@ local utils = require('copilot_agent.utils')
 local state = cfg.state
 local notify = cfg.notify
 local log = cfg.log
+local active_provider = cfg.active_provider
+local provider_key = cfg.provider_key
+  or function(provider)
+    if type(provider) ~= 'string' then
+      return nil
+    end
+    provider = vim.trim(provider)
+    if provider == '' then
+      return nil
+    end
+    return provider
+  end
+local session_provider = cfg.session_provider
+local bind_session_provider = cfg.bind_session_provider
+local session_model_key = cfg.session_model_key or function(session_id)
+  if type(session_id) ~= 'string' or session_id == '' then
+    return nil
+  end
+  return session_id
+end
 
 local request = http.request
 local sync_request = http.sync_request

@@ -21,7 +21,7 @@ local session_model_key = cfg.session_model_key or function(session_id)
   end
   return session_id
 end
-local session_provider = cfg.session_provider
+local session_provider = cfg.session_provider or function() return nil end
 
 local request = http.request
 local sync_request = http.sync_request

@@ -24,9 +24,7 @@ local session_model_key = cfg.session_model_key or function(session_id)
   end
   return session_id
 end
-local provider_for_session = cfg.session_provider or function()
-  return 'copilot'
-end
+local provider_for_session = cfg.session_provider or function() end
 
 local state = cfg.state
 local notify = cfg.notify

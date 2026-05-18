@@ -30,7 +30,7 @@ local provider_key = cfg.provider_key
     end
     return provider
   end
-local session_provider = cfg.session_provider
+local session_provider = cfg.session_provider or function() return nil end
 local bind_session_provider = cfg.bind_session_provider
 local session_model_key = cfg.session_model_key or function(session_id)
   if type(session_id) ~= 'string' or session_id == '' then
@@ -464,7 +464,6 @@ function M.resume_session(session_id, callback, opts)
   request_fn('POST', '/sessions', {
     sessionId = session_id,
     resume = true,
-    provider = provider,
     clientId = service.client_id(),
     clientName = state.config.client_name,
     permissionMode = state.permission_mode or state.config.permission_mode,
@@ -889,7 +888,6 @@ create_session = function(callback, opts)
   local request_fn = opts.strict_discovery == true and request_with_managed_base_url or request
   request_fn('POST', '/sessions', {
     sessionId = opts.session_id,
-    provider = provider,
     clientId = service.client_id(),
     clientName = state.config.client_name,
     permissionMode = state.permission_mode or state.config.permission_mode,
@@ -945,7 +943,6 @@ create_session = function(callback, opts)
           append_entry('system', 'Retrying session creation with model ' .. reselected_model)
           state.creating_session = true
           create_session(callback, {
-            provider = provider,
             model = reselected_model,
             model_selection_attempts = false,
           })

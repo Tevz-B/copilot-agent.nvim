@@ -22,6 +22,7 @@ local CONTROL_REQUEST_TIMEOUT_SECONDS = '2' -- Bound local control-socket curl c
 local SAVED_ADDR_PROBE_TIMEOUT_SECONDS = '1' -- Quick probe timeout when validating persisted service addresses.
 local STALE_ADDR_FAILURE_THRESHOLD = 3 -- After this many consecutive health-check failures on the same discovered address, force a fresh restart.
 local DEFAULT_CLIENT_HEARTBEAT_INTERVAL_MS = 10000 -- Refresh client registration periodically so detached idle shutdown never races active chat use.
+local MAX_STARTUP_TIMEOUT_MS = 5000 -- Keep startup waits bounded so failed peer starts recover quickly.
 local DEFAULT_SERVICE_LOG_PATH = vim.fn.stdpath('state') .. '/copilot-agent-service.log'
 local DEFAULT_CLIENT_ID_LENGTH = 32
 
@@ -646,6 +647,7 @@ end
 local function interval_settings()
   local timeout_ms = tonumber(state.config.service.startup_timeout_ms) or defaults.service.startup_timeout_ms
   local interval_ms = tonumber(state.config.service.startup_poll_interval_ms) or defaults.service.startup_poll_interval_ms
+  timeout_ms = math.max(1000, math.min(timeout_ms, MAX_STARTUP_TIMEOUT_MS))
   return timeout_ms, interval_ms
 end
 

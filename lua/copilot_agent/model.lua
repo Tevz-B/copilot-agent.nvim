@@ -10,6 +10,7 @@ local service = require('copilot_agent.service')
 local utils = require('copilot_agent.utils')
 local sl = require('copilot_agent.statusline')
 local render = require('copilot_agent.render')
+local session_models_store = require('copilot_agent.session_models')
 
 local state = cfg.state
 local notify = cfg.notify
@@ -231,6 +232,7 @@ function M.apply_model(model, callback, opts)
       if key then
         state.session_models[key] = active_model
       end
+      session_models_store.set(state.session_id, active_model)
     end
     local msg = 'Active model: ' .. active_model
     if opts.reasoning_effort and opts.reasoning_effort ~= '' then

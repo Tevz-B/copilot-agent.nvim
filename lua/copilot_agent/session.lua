@@ -456,6 +456,7 @@ end
 
 function M.resume_session(session_id, callback, opts)
   opts = opts or {}
+  local provider = set_active_provider(opts.provider)
   local requested_wd = working_directory()
   local requested_model = requested_model_for_session(session_id, provider, opts.model)
   log(string.format('resume_session request id=%s provider=%s cwd=%s', format_session_id(session_id), tostring(provider), requested_wd), vim.log.levels.DEBUG)
@@ -463,6 +464,7 @@ function M.resume_session(session_id, callback, opts)
   request_fn('POST', '/sessions', {
     sessionId = session_id,
     resume = true,
+    provider = provider,
     clientId = service.client_id(),
     clientName = state.config.client_name,
     permissionMode = state.permission_mode or state.config.permission_mode,
@@ -871,6 +873,7 @@ end
 
 create_session = function(callback, opts)
   opts = opts or {}
+  local provider = set_active_provider(opts.provider)
   local requested_wd = working_directory()
   local requested_model = requested_model_for_session(opts.session_id, provider, opts.model)
   log(
@@ -886,6 +889,7 @@ create_session = function(callback, opts)
   local request_fn = opts.strict_discovery == true and request_with_managed_base_url or request
   request_fn('POST', '/sessions', {
     sessionId = opts.session_id,
+    provider = provider,
     clientId = service.client_id(),
     clientName = state.config.client_name,
     permissionMode = state.permission_mode or state.config.permission_mode,
@@ -930,6 +934,12 @@ create_session = function(callback, opts)
             notify('Failed to create session: ' .. prompt_err, vim.log.levels.ERROR)
             append_entry('error', 'Failed to create session: ' .. prompt_err)
             on_session_ready(nil, prompt_err)
+            return
+          end
+          if type(reselected_model) ~= 'string' or vim.trim(reselected_model) == '' then
+            local message = string.format('Model "%s" is unavailable and no replacement was selected', um)
+            append_entry('error', message)
+            on_session_ready(nil, message)
             return
           end
           append_entry('system', 'Retrying session creation with model ' .. reselected_model)

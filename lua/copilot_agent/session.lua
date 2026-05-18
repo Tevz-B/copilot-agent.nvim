@@ -939,7 +939,6 @@ create_session = function(callback, opts)
       return
     end
 
-
     approvals.reset()
     start_event_stream(state.session_id)
 

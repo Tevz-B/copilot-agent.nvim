@@ -250,30 +250,23 @@ func listenInRange(host, portRange string) (net.Listener, error) {
 }
 
 func (s *service) handleListModels(w http.ResponseWriter, r *http.Request) {
-	providerRuntime, err := s.requestedProvider(r, "")
+	req, err := decodeListModelsRequest(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	if isClaudeProviderType(providerRuntime.Type) {
-		models := []map[string]any{
-			{"id": "claude-opus-4-6", "name": "Claude Opus 4.6"},
-			{"id": "claude-sonnet-4-5", "name": "Claude Sonnet 4.5"},
-			{"id": "claude-haiku-4-5", "name": "Claude Haiku 4.5"},
-		}
-		if strings.TrimSpace(providerRuntime.Model) != "" {
-			models = append([]map[string]any{{"id": providerRuntime.Model, "name": providerRuntime.Model}}, models...)
-		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"provider": providerRuntime.Name,
-			"models":   models,
-		})
+	providerName := inferredProviderName(req.Provider, "")
+	providerRuntime, err := s.requestedProvider(r, providerName)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	models, err := withCopilotClientRetry(s, "list models", func(client copilotClient) ([]copilot.ModelInfo, error) {
-		return client.ListModels(r.Context())
+	models, err := s.listModelsForProvider(r.Context(), providerName, sessionProviderOverrides{
+		BaseURL:     req.ProviderBaseURL,
+		APIKey:      req.ProviderAPIKey,
+		BearerToken: req.ProviderBearerToken,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, fmt.Sprintf("list models: %v", err))

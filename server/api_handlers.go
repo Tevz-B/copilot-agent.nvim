@@ -47,6 +47,11 @@ func (s *service) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	providerOverrides := sessionProviderOverrides{
+		BaseURL:     req.ProviderBaseURL,
+		APIKey:      req.ProviderAPIKey,
+		BearerToken: req.ProviderBearerToken,
+	}
 	providerRuntime, err := s.requestedProvider(r, req.Provider)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -137,6 +142,12 @@ func (s *service) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, fmt.Sprintf("resolve model: %v", err))
 		return
 	}
+	providerName := inferredProviderName(req.Provider, model)
+	providerConfig, _, err := providerConfigForSession(providerName, providerOverrides)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	managed := &managedSession{
 		sessionID:           req.SessionID,
@@ -185,6 +196,7 @@ func (s *service) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 				ClientName:                     clientName,
 				Model:                          managed.model,
 				ReasoningEffort:                req.ReasoningEffort,
+				Provider:                       providerConfig,
 				SystemMessage:                  req.SystemMessage,
 				AvailableTools:                 req.AvailableTools,
 				ExcludedTools:                  req.ExcludedTools,
@@ -215,6 +227,7 @@ func (s *service) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 				ClientName:                     clientName,
 				Model:                          managed.model,
 				ReasoningEffort:                req.ReasoningEffort,
+				Provider:                       providerConfig,
 				SystemMessage:                  req.SystemMessage,
 				AvailableTools:                 req.AvailableTools,
 				ExcludedTools:                  req.ExcludedTools,

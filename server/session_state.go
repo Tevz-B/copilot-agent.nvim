@@ -120,6 +120,8 @@ type managedSession struct {
 	claudeMessages       []anthropic.MessageParam
 	claudeMessagesMu     sync.RWMutex
 	claudeSystemPrompt   string
+	claudeAPIKey         string
+	claudeAuthToken      string
 	claudeAPIKeyEnv      string
 	claudeAuthTokenEnv   string
 	claudeBaseURL        string

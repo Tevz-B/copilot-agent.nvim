@@ -630,6 +630,34 @@ func TestHandleHealthReturns503WhenRestartFails(t *testing.T) {
 	}
 }
 
+func TestHandleHealthUnknownProviderStillReturns200(t *testing.T) {
+	t.Parallel()
+
+	svc := &service{
+		client:    &fakeCopilotClient{state: copilot.StateConnected},
+		provider:  providerCopilot,
+		providers: map[string]providerRuntime{providerCopilot: {Name: providerCopilot, Type: providerCopilot}},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz?provider=claude", nil)
+	w := httptest.NewRecorder()
+	svc.handleHealth(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var body map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if body["ok"] != true {
+		t.Fatalf("expected ok=true, got %v", body["ok"])
+	}
+	if body["providerType"] != "claude" {
+		t.Fatalf("expected providerType=claude, got %v", body["providerType"])
+	}
+}
+
 // ── writeJSON / writeError ────────────────────────────────────────────────────
 
 func TestWriteJSONSetsContentTypeAndStatus(t *testing.T) {
@@ -1240,25 +1268,28 @@ func TestHandleCreateSessionForwardsClaudeProvider(t *testing.T) {
 	if w.Code != http.StatusCreated {
 		t.Fatalf("want 201, got %d: %s", w.Code, w.Body.String())
 	}
-	if client.createSessionConfig == nil || client.createSessionConfig.Provider == nil {
-		t.Fatalf("expected provider config to be forwarded, got %+v", client.createSessionConfig)
-	}
-	if got := client.createSessionConfig.Provider.Type; got != "anthropic" {
-		t.Fatalf("expected anthropic provider, got %q", got)
-	}
-	if got := client.createSessionConfig.Provider.BaseURL; got != "https://api.anthropic.com" {
-		t.Fatalf("expected Anthropic base URL, got %q", got)
-	}
-	if got := client.createSessionConfig.Provider.APIKey; got != "test-key" {
-		t.Fatalf("expected Anthropic API key to be forwarded, got %q", got)
-	}
-
 	var summary sessionSummary
 	if err := json.NewDecoder(w.Body).Decode(&summary); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
 	if summary.Provider != "claude" {
 		t.Fatalf("expected response provider claude, got %q", summary.Provider)
+	}
+	if client.createSessionCalls != 0 {
+		t.Fatalf("expected copilot client create to be skipped, got %d calls", client.createSessionCalls)
+	}
+	managed, ok, _ := svc.getManagedSession(summary.SessionID, "claude")
+	if !ok {
+		t.Fatalf("expected managed claude session %q to be stored", summary.SessionID)
+	}
+	if managed.claudeAPIKey != "test-key" {
+		t.Fatalf("expected Anthropic API key to be stored, got %q", managed.claudeAPIKey)
+	}
+	if managed.claudeBaseURL != "https://api.anthropic.com" {
+		t.Fatalf("expected Anthropic base URL to be stored, got %q", managed.claudeBaseURL)
+	}
+	if _, ok := managed.ps.(*claudeSession); !ok {
+		t.Fatalf("expected claude provider session, got %T", managed.ps)
 	}
 }
 
@@ -1285,25 +1316,28 @@ func TestHandleResumeSessionForwardsClaudeProvider(t *testing.T) {
 	if w.Code != http.StatusCreated {
 		t.Fatalf("want 201, got %d: %s", w.Code, w.Body.String())
 	}
-	if client.resumeSessionConfig == nil || client.resumeSessionConfig.Provider == nil {
-		t.Fatalf("expected resume provider config to be forwarded, got %+v", client.resumeSessionConfig)
-	}
-	if got := client.resumeSessionConfig.Provider.Type; got != "anthropic" {
-		t.Fatalf("expected anthropic provider, got %q", got)
-	}
-	if got := client.resumeSessionConfig.Provider.BaseURL; got != "https://api.anthropic.com" {
-		t.Fatalf("expected Anthropic base URL, got %q", got)
-	}
-	if got := client.resumeSessionConfig.Provider.APIKey; got != "test-key" {
-		t.Fatalf("expected Anthropic API key to be forwarded, got %q", got)
-	}
-
 	var summary sessionSummary
 	if err := json.NewDecoder(w.Body).Decode(&summary); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
 	if summary.Provider != "claude" {
 		t.Fatalf("expected response provider claude, got %q", summary.Provider)
+	}
+	if client.resumeSessionCalls != 0 {
+		t.Fatalf("expected copilot client resume to be skipped, got %d calls", client.resumeSessionCalls)
+	}
+	managed, ok, _ := svc.getManagedSession(summary.SessionID, "claude")
+	if !ok {
+		t.Fatalf("expected managed claude session %q to be stored", summary.SessionID)
+	}
+	if managed.claudeAPIKey != "test-key" {
+		t.Fatalf("expected Anthropic API key to be stored, got %q", managed.claudeAPIKey)
+	}
+	if managed.claudeBaseURL != "https://api.anthropic.com" {
+		t.Fatalf("expected Anthropic base URL to be stored, got %q", managed.claudeBaseURL)
+	}
+	if _, ok := managed.ps.(*claudeSession); !ok {
+		t.Fatalf("expected claude provider session, got %T", managed.ps)
 	}
 }
 
@@ -1328,17 +1362,28 @@ func TestHandleCreateSessionForwardsClaudeProviderFromRequest(t *testing.T) {
 	if w.Code != http.StatusCreated {
 		t.Fatalf("want 201, got %d: %s", w.Code, w.Body.String())
 	}
-	if client.createSessionConfig == nil || client.createSessionConfig.Provider == nil {
-		t.Fatalf("expected provider config to be forwarded, got %+v", client.createSessionConfig)
+	var summary sessionSummary
+	if err := json.NewDecoder(w.Body).Decode(&summary); err != nil {
+		t.Fatalf("decode response: %v", err)
 	}
-	if got := client.createSessionConfig.Provider.Type; got != "anthropic" {
-		t.Fatalf("expected anthropic provider, got %q", got)
+	if summary.Provider != "claude" {
+		t.Fatalf("expected response provider claude, got %q", summary.Provider)
 	}
-	if got := client.createSessionConfig.Provider.BaseURL; got != "https://litellm.example/v1" {
-		t.Fatalf("expected request base URL, got %q", got)
+	if client.createSessionCalls != 0 {
+		t.Fatalf("expected copilot client create to be skipped, got %d calls", client.createSessionCalls)
 	}
-	if got := client.createSessionConfig.Provider.APIKey; got != "proxy-key" {
-		t.Fatalf("expected request API key to be forwarded, got %q", got)
+	managed, ok, _ := svc.getManagedSession(summary.SessionID, "claude")
+	if !ok {
+		t.Fatalf("expected managed claude session %q to be stored", summary.SessionID)
+	}
+	if managed.claudeAPIKey != "proxy-key" {
+		t.Fatalf("expected request API key to be stored, got %q", managed.claudeAPIKey)
+	}
+	if managed.claudeBaseURL != "https://litellm.example/v1" {
+		t.Fatalf("expected request base URL to be stored, got %q", managed.claudeBaseURL)
+	}
+	if _, ok := managed.ps.(*claudeSession); !ok {
+		t.Fatalf("expected claude provider session, got %T", managed.ps)
 	}
 }
 

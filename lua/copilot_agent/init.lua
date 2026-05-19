@@ -166,6 +166,7 @@ function M.setup(opts)
   state.shutting_down = false
   -- Initialize runtime permission mode from config.
   state.permission_mode = state.config.permission_mode or 'interactive'
+  state.input_mode = state.config.input_mode or 'agent'
   -- Reset transient live activity / overlay state when setup is rerun.
   state.active_tool = nil
   state.active_tool_run_id = nil

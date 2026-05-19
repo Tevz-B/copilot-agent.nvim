@@ -5,9 +5,18 @@
 -- Pure utility functions with no Neovim API dependencies.
 -- Kept in a separate module so they can be unit-tested with plain Lua / busted.
 local M = {}
+local SIDE_QUESTION_SESSION_PREFIX = 'nvim-side-question-'
+local SIDE_QUESTION_SUMMARY_PREFIX = 'answer this side question briefly'
 
 local function escape_lua_pattern(text)
   return text:gsub('([%(%)%.%%%+%-%*%?%[%]%^%$])', '%%%1')
+end
+
+local function trim_whitespace(text)
+  if type(text) ~= 'string' then
+    return text
+  end
+  return (text:gsub('^%s+', ''):gsub('%s+$', ''))
 end
 
 local function normalized_home_path()
@@ -74,6 +83,47 @@ function M.normalize_display_text(text)
     return ''
   end
   return tostring(text)
+end
+
+function M.side_question_session_prefix()
+  return SIDE_QUESTION_SESSION_PREFIX
+end
+
+function M.is_side_question_session(session)
+  if type(session) ~= 'table' then
+    return false
+  end
+
+  local session_id = trim_whitespace(session.sessionId or session.sessionID or session.id)
+  if type(session_id) == 'string' and session_id ~= '' then
+    local lowered_id = session_id:lower()
+    if lowered_id:find('^' .. escape_lua_pattern(SIDE_QUESTION_SESSION_PREFIX)) ~= nil then
+      return true
+    end
+  end
+
+  local summary = trim_whitespace(session.summary or session.Summary)
+  if type(summary) ~= 'string' or summary == '' then
+    return false
+  end
+
+  local lowered_summary = summary:lower()
+  return lowered_summary:find('^' .. escape_lua_pattern(SIDE_QUESTION_SUMMARY_PREFIX)) ~= nil
+end
+
+function M.partition_side_question_sessions(sessions)
+  local visible = {}
+  local hidden = {}
+
+  for _, session in ipairs(sessions or {}) do
+    if M.is_side_question_session(session) then
+      hidden[#hidden + 1] = session
+    else
+      visible[#visible + 1] = session
+    end
+  end
+
+  return visible, hidden
 end
 
 function M.truncate_session_summary(summary, max_len)

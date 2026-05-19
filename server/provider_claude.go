@@ -125,26 +125,33 @@ func anthropicClientOptionsFromManaged(managed *managedSession) ([]option.Reques
 		return nil, errors.New("claude session is not initialized")
 	}
 
-	apiKeyEnv := strings.TrimSpace(managed.claudeAPIKeyEnv)
-	if apiKeyEnv == "" {
-		apiKeyEnv = "ANTHROPIC_API_KEY"
+	apiKey := strings.TrimSpace(managed.claudeAPIKey)
+	if apiKey == "" {
+		apiKeyEnv := strings.TrimSpace(managed.claudeAPIKeyEnv)
+		if apiKeyEnv == "" {
+			apiKeyEnv = "ANTHROPIC_API_KEY"
+		}
+		apiKey = strings.TrimSpace(os.Getenv(apiKeyEnv))
 	}
-	authTokenEnv := strings.TrimSpace(managed.claudeAuthTokenEnv)
-	if authTokenEnv == "" {
-		authTokenEnv = "ANTHROPIC_AUTH_TOKEN"
+	authToken := strings.TrimSpace(managed.claudeAuthToken)
+	if authToken == "" {
+		authTokenEnv := strings.TrimSpace(managed.claudeAuthTokenEnv)
+		if authTokenEnv == "" {
+			authTokenEnv = "ANTHROPIC_AUTH_TOKEN"
+		}
+		authToken = firstNonEmpty(
+			strings.TrimSpace(os.Getenv(authTokenEnv)),
+			strings.TrimSpace(os.Getenv("ANTHROPIC_BEARER_TOKEN")),
+		)
 	}
-
-	apiKey := strings.TrimSpace(os.Getenv(apiKeyEnv))
-	authToken := strings.TrimSpace(os.Getenv(authTokenEnv))
 	if apiKey == "" && authToken == "" {
-		return nil, fmt.Errorf("missing Anthropic credentials: set %s or %s", apiKeyEnv, authTokenEnv)
+		return nil, fmt.Errorf("missing Anthropic credentials: set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN")
 	}
 
 	options := make([]option.RequestOption, 0, 3)
 	if apiKey != "" {
 		options = append(options, option.WithAPIKey(apiKey))
-	}
-	if authToken != "" {
+	} else if authToken != "" {
 		options = append(options, option.WithAuthToken(authToken))
 	}
 	if baseURL := strings.TrimSpace(managed.claudeBaseURL); baseURL != "" {

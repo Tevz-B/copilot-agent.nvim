@@ -28,6 +28,7 @@ local defaults = {
     command = nil, -- nil = auto-detect installed binary, then fall back to 'go run .'
     cwd = nil, -- defaults to <plugin_root>/server
     env = nil,
+    providers_config = nil, -- optional YAML file passed as --providers-config to enable multiple named providers
     port_range = nil, -- e.g. '18000-19000'; appended as --port-range when set
     log = {
       enabled = false, -- When true, pass --log-file to the Go service.
@@ -155,6 +156,10 @@ local defaults = {
     -- 'auto': silently resume the most recent matching session without prompting.
     auto_resume = 'prompt',
   },
+  providers = {
+    active = nil, -- current provider name (nil = service default provider)
+    handoff_on_switch = true, -- include a one-shot context handoff when switching providers
+  },
   lsp = {
     enabled = false,
   },
@@ -211,6 +216,9 @@ local state = {
   input_mode = 'agent', -- 'ask' | 'plan' | 'agent' | 'test' | 'autopilot'
   reasoning_effort = nil, -- current reasoning effort level (nil = model default)
   permission_mode = 'interactive', -- 'interactive' | 'approve-all' | 'autopilot'
+  active_provider = nil, -- currently selected provider name (copilot/claude or custom provider key)
+  provider_cache = {}, -- provider descriptors from GET /providers
+  provider_sessions = {}, -- most recent attached session id by provider key
   session_name = nil, -- auto-generated name from SDK (updated after each turn)
   session_working_directory = nil, -- working directory bound to the active session
   pending_attachments = {}, -- list of {type, path, display} waiting to be sent
@@ -302,22 +310,22 @@ local state = {
     -- Slots are created lazily by provider_state(); seed common providers so
     -- they are always present after init.lua calls M.reset().
     copilot = {
-      current_model = nil,
+      current_model         = nil,
       pending_session_model = nil,
-      session_models = {},
-      input_mode = 'agent', -- 'ask' | 'plan' | 'agent' | 'test' | 'autopilot'
-      reasoning_effort = nil, -- nil = model default
-      permission_mode = 'interactive', -- 'interactive' | 'approve-all' | 'autopilot'
-      provider_sessions = {}, -- session_id -> provider name
+      session_models        = {},
+      input_mode            = 'agent',  -- 'ask' | 'plan' | 'agent' | 'test' | 'autopilot'
+      reasoning_effort      = nil,      -- nil = model default
+      permission_mode       = 'interactive', -- 'interactive' | 'approve-all' | 'autopilot'
+      provider_sessions     = {},       -- session_id -> provider name
     },
     claude = {
-      current_model = nil,
+      current_model         = nil,
       pending_session_model = nil,
-      session_models = {},
-      input_mode = 'agent', -- 'ask' | 'plan' | 'agent' | 'auto'
-      reasoning_effort = nil,
-      permission_mode = 'interactive',
-      provider_sessions = {},
+      session_models        = {},
+      input_mode            = 'agent',  -- 'ask' | 'plan' | 'agent' | 'auto'
+      reasoning_effort      = nil,
+      permission_mode       = 'interactive',
+      provider_sessions     = {},
     },
   },
 }
@@ -338,15 +346,10 @@ local state = {
 -- { word = '/logout', info = 'Log out of an OAuth login session' },
 -- { word = '/restart', info = 'Restart the CLI, preserving current session' },
 -- { word = '/user', info = 'Manage GitHub user list' },
---- Slash commands available in the input completion menu.
---- Each entry may have an optional `providers` field:
----   - nil        → available for all providers
----   - {'claude'} → Claude-only
----   - {'copilot'}→ Copilot-only
 local SLASH_COMMANDS = {
-  -- Universal commands (no providers field)
   { word = '/help', info = 'Show help for interactive commands' },
   { word = '/model', info = 'Select AI model to use' },
+  { word = '/provider', info = 'Switch provider or pick from configured providers' },
   { word = '/resume', info = 'Switch to a different session' },
   { word = '/rename', info = 'Rename the current session' },
   { word = '/new', info = 'Start a new conversation' },
@@ -360,7 +363,7 @@ local SLASH_COMMANDS = {
   { word = '/lsp', info = 'Bootstrap or inspect project language server config' },
   { word = '/plan', info = 'Create an implementation plan' },
   { word = '/research', info = 'Run deep research investigation' },
-  { word = '/init', info = 'Initialize instructions/claude for this repository' },
+  { word = '/init', info = 'Initialize Copilot instructions for this repository' },
   { word = '/agent', info = 'Browse and select available agents' },
   { word = '/skills', info = 'Manage skills for enhanced capabilities' },
   { word = '/mcp', info = 'Manage MCP server configuration' },
@@ -383,19 +386,6 @@ local SLASH_COMMANDS = {
   { word = '/experimental', info = 'Show/enable/disable experimental features' },
   { word = '/instructions', info = 'View and toggle custom instruction files' },
   { word = '/exit', info = 'Exit the CLI' },
-  -- Claude-only commands
-  { word = '/effort', info = 'Adjust reasoning effort level', providers = { 'claude' } },
-  { word = '/memory', info = 'Manage Claude memory and CLAUDE.md', providers = { 'claude' } },
-  { word = '/permissions', info = 'View and manage tool permissions', providers = { 'claude' } },
-  { word = '/background', info = 'Run a task in the background', providers = { 'claude' } },
-  { word = '/agents', info = 'List active background agents', providers = { 'claude' } },
-  { word = '/batch', info = 'Run batch operations', providers = { 'claude' } },
-  { word = '/doctor', info = 'Diagnose configuration issues', providers = { 'claude' } },
-  { word = '/debug', info = 'Toggle debug mode', providers = { 'claude' } },
-  { word = '/feedback', info = 'Send feedback', providers = { 'claude' } },
-  { word = '/btw', info = 'Inject a side note into the conversation', providers = { 'claude' } },
-  { word = '/security-review', info = 'Run security-focused code review', providers = { 'claude' } },
-  { word = '/simplify', info = 'Simplify complex code', providers = { 'claude' } },
 }
 
 local function normalize_base_url(url)
@@ -442,6 +432,12 @@ end
 
 local function active_session_model(session_id, provider)
   local active_session_id = type(session_id) == 'string' and session_id or state.session_id
+  if type(active_session_id) ~= 'string' or active_session_id == '' then
+    if type(state.pending_session_model) == 'string' and state.pending_session_model ~= '' then
+      return state.pending_session_model
+    end
+    return nil
+  end
 
   local normalized_provider = type(provider) == 'string' and vim.trim(provider):lower() or nil
   if normalized_provider == '' then
@@ -460,43 +456,8 @@ local function active_session_model(session_id, provider)
     normalized_provider = 'copilot'
   end
 
-  -- No active session yet: return the pending model from the provider slot.
-  if type(active_session_id) ~= 'string' or active_session_id == '' then
-    -- Check provider-scoped pending model first.
-    -- NOTE: provider_state() is defined below normalize_provider(), but
-    -- active_session_model() is only *called* at runtime so the forward
-    -- reference is safe.
-    local pslot = type(state.providers) == 'table' and state.providers[normalized_provider]
-    if type(pslot) == 'table' and type(pslot.pending_session_model) == 'string' and pslot.pending_session_model ~= '' then
-      return pslot.pending_session_model
-    end
-    -- TODO(migration): Fallback to legacy flat pending_session_model.
-    if type(state.pending_session_model) == 'string' and state.pending_session_model ~= '' then
-      return state.pending_session_model
-    end
-    return nil
-  end
-
   local key = session_model_key(active_session_id, normalized_provider)
   if type(active_session_id) == 'string' and active_session_id ~= '' then
-    -- Check provider-scoped session_models first.
-    local pslot = type(state.providers) == 'table' and state.providers[normalized_provider]
-    if type(pslot) == 'table' and type(pslot.session_models) == 'table' then
-      local model = key and pslot.session_models[key] or nil
-      if model_matches_provider(model, normalized_provider) then
-        return model
-      end
-      local legacy_model = pslot.session_models[active_session_id]
-      if model_matches_provider(legacy_model, normalized_provider) then
-        return legacy_model
-      end
-      -- current_model from the provider slot.
-      if active_session_id == state.session_id and model_matches_provider(pslot.current_model, normalized_provider) then
-        return pslot.current_model
-      end
-    end
-    -- TODO(migration): Fallback to legacy flat session_models / current_model.
-    -- Remove once provider-scoped slot is the sole source of truth.
     local models = state.session_models
     if type(models) == 'table' then
       local model = key and models[key] or nil
@@ -561,7 +522,9 @@ local function provider_state(name)
   if not pname then
     -- active_provider() is defined later; read the raw field to avoid a
     -- forward-reference loop.
-    pname = normalize_provider(state.active_provider) or normalize_provider(state.config and state.config.default_provider) or 'copilot'
+    pname = normalize_provider(state.active_provider)
+      or normalize_provider(state.config and state.config.default_provider)
+      or 'copilot'
   end
 
   if type(state.providers) ~= 'table' then
@@ -570,13 +533,13 @@ local function provider_state(name)
   if type(state.providers[pname]) ~= 'table' then
     -- Lazily create a fresh slot for an unknown provider.
     state.providers[pname] = {
-      current_model = nil,
+      current_model         = nil,
       pending_session_model = nil,
-      session_models = {},
-      input_mode = 'agent',
-      reasoning_effort = nil,
-      permission_mode = 'interactive',
-      provider_sessions = {},
+      session_models        = {},
+      input_mode            = 'agent',
+      reasoning_effort      = nil,
+      permission_mode       = 'interactive',
+      provider_sessions     = {},
     }
   end
 
@@ -630,16 +593,11 @@ local function set_provider_state(name, field, value)
   -- TODO(migration): Mirror writes back onto the legacy flat field so code
   -- that has not yet been migrated still sees the change.  Remove this block
   -- together with the flat fields once migration is complete.
-  if field == 'current_model' then
-    state.current_model = value
-  elseif field == 'pending_session_model' then
-    state.pending_session_model = value
-  elseif field == 'input_mode' then
-    state.input_mode = value
-  elseif field == 'reasoning_effort' then
-    state.reasoning_effort = value
-  elseif field == 'permission_mode' then
-    state.permission_mode = value
+  if field == 'current_model' then state.current_model = value
+  elseif field == 'pending_session_model' then state.pending_session_model = value
+  elseif field == 'input_mode' then state.input_mode = value
+  elseif field == 'reasoning_effort' then state.reasoning_effort = value
+  elseif field == 'permission_mode' then state.permission_mode = value
   end
 end
 
@@ -690,7 +648,10 @@ local function provider_request_config(provider, model)
     providerApiKey = provider_env_value('ANTHROPIC_API_KEY'),
     providerBearerToken = provider_env_value('ANTHROPIC_BEARER_TOKEN'),
   }
-  if request_config.providerBaseUrl == nil and request_config.providerApiKey == nil and request_config.providerBearerToken == nil then
+  if request_config.providerBaseUrl == nil
+    and request_config.providerApiKey == nil
+    and request_config.providerBearerToken == nil
+  then
     return nil
   end
   return request_config
@@ -702,38 +663,16 @@ local function bind_session_provider(session_id, provider)
   if session_id == '' or not normalized then
     return nil
   end
-  -- Write into the provider-scoped slot.
-  local slot = provider_state(normalized)
-  slot.provider_sessions[session_id] = normalized
-  -- TODO(migration): Also write to the legacy flat table so code that reads
-  -- state.provider_sessions directly still sees this entry.  Remove once all
-  -- call-sites use session_provider() / provider_state().
-  if type(state.provider_sessions) == 'table' then
-    state.provider_sessions[session_id] = normalized
-  end
+  state.provider_sessions[session_id] = normalized
   return normalized
 end
 
 local function session_provider(session_id, fallback_provider)
   session_id = type(session_id) == 'string' and vim.trim(session_id) or ''
   if session_id ~= '' then
-    -- Prefer the provider-scoped lookup; try every known provider slot first.
-    if type(state.providers) == 'table' then
-      for pname, slot in pairs(state.providers) do
-        if type(slot) == 'table' and type(slot.provider_sessions) == 'table' then
-          local mapped = slot.provider_sessions[session_id]
-          if type(mapped) == 'string' and mapped ~= '' then
-            return mapped
-          end
-        end
-      end
-    end
-    -- TODO(migration): Fallback to legacy flat provider_sessions table.
-    -- Remove this block once bind_session_provider has been the sole writer
-    -- long enough that no legacy entries remain.
-    local legacy = type(state.provider_sessions) == 'table' and state.provider_sessions[session_id] or nil
-    if type(legacy) == 'string' and legacy ~= '' then
-      return legacy
+    local mapped = state.provider_sessions[session_id]
+    if type(mapped) == 'string' and mapped ~= '' then
+      return mapped
     end
   end
   local normalized_fallback = normalize_provider(fallback_provider)
@@ -754,14 +693,12 @@ return {
   should_log = logging.should_log,
   serialize_log_value = logging.serialize_log_value,
   normalize_base_url = normalize_base_url,
+  provider_key = normalize_provider,
+  active_provider = active_provider,
+  session_model_key = session_model_key,
+  session_provider = session_provider,
+  bind_session_provider = bind_session_provider,
   active_session_model = active_session_model,
   default_provider = default_provider,
-  active_provider = active_provider,
   provider_request_config = provider_request_config,
-  bind_session_provider = bind_session_provider,
-  session_provider = session_provider,
-  session_model_key = session_model_key,
-  provider_key = normalize_provider,
-  provider_state = provider_state,
-  set_provider_state = set_provider_state,
 }

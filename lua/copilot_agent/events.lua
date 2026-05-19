@@ -2104,6 +2104,14 @@ local function handle_session_event(payload)
     return
   end
 
+  if event_type == 'assistant.error' then
+    local error_message = first_non_empty(data.error, data.Error, data.message, data.Message) or vim.inspect(data)
+    log('assistant.error payload=' .. serialize_log_value(sanitize_log_value(data), { max_len = 1200, depth = 8 }), vim.log.levels.WARN)
+    clear_live_turn_state('assistant error', { clear_pending_checkpoint_turn = true })
+    append_entry('error', error_message)
+    return
+  end
+
   if event_type == 'assistant.turn_end' then
     if not state.history_loading then
       refresh_session_name_from_server(state.session_id)
@@ -2137,7 +2145,11 @@ local function handle_session_event(payload)
         })
       end
     end
-    finish_running_todos('done')
+    if first_non_empty(data.error, data.Error, data.message, data.Message) then
+      finish_running_todos('blocked')
+    else
+      finish_running_todos('done')
+    end
     clear_live_turn_state('turn end')
     -- The previous render may have frozen only the pre-assistant prefix while a
     -- checkpoint write was still pending. Force a full rebuild here so the

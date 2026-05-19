@@ -13,7 +13,7 @@ import (
 	"github.com/github/copilot-sdk/go/rpc"
 )
 
-func (s *service) handleCreateClaudeSession(w http.ResponseWriter, req createSessionRequest, managed *managedSession, provider providerRuntime) {
+func (s *service) handleCreateClaudeSession(w http.ResponseWriter, req createSessionRequest, managed *managedSession, provider providerRuntime, providerConfig *copilot.ProviderConfig) {
 	if managed == nil {
 		writeError(w, http.StatusInternalServerError, "failed to initialize claude session")
 		return
@@ -24,9 +24,16 @@ func (s *service) handleCreateClaudeSession(w http.ResponseWriter, req createSes
 	if req.SystemMessage != nil {
 		managed.claudeSystemPrompt = strings.TrimSpace(req.SystemMessage.Content)
 	}
+	if providerConfig != nil {
+		managed.claudeAPIKey = strings.TrimSpace(providerConfig.APIKey)
+		managed.claudeAuthToken = strings.TrimSpace(providerConfig.BearerToken)
+		managed.claudeBaseURL = strings.TrimSpace(providerConfig.BaseURL)
+	}
 	managed.claudeAPIKeyEnv = provider.ClaudeAPIKeyEnv
 	managed.claudeAuthTokenEnv = provider.ClaudeAuthTokenEnv
-	managed.claudeBaseURL = provider.ClaudeBaseURL
+	if managed.claudeBaseURL == "" {
+		managed.claudeBaseURL = provider.ClaudeBaseURL
+	}
 	managed.ps = &claudeSession{managed: managed, svc: s}
 	if managed.sessionName == "" {
 		managed.sessionName = managed.id()
@@ -137,7 +144,23 @@ func (s *service) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	streaming := boolOrDefault(req.Streaming, true)
 	configDiscovery := boolOrDefault(req.EnableConfigDiscovery, true)
 
-	model, err := s.resolveRequestedModel(r.Context(), providerRuntime, firstNonEmpty(req.Model, providerRuntime.Model, s.defaultModel))
+	modelCandidate := firstNonEmpty(req.Model, providerRuntime.Model)
+	if modelCandidate == "" {
+		if isClaudeProviderType(providerRuntime.Type) {
+			modelCandidate = claudeDefaultModel
+		} else {
+			modelCandidate = strings.TrimSpace(s.defaultModel)
+		}
+	}
+	if isClaudeProviderType(providerRuntime.Type) {
+		normalizedModel := strings.ToLower(strings.TrimSpace(modelCandidate))
+		if normalizedModel == "" || !strings.Contains(normalizedModel, "claude") {
+			logWarnf("session %s requested non-claude model %q for provider=claude; falling back to %q", req.SessionID, modelCandidate, claudeDefaultModel)
+			modelCandidate = claudeDefaultModel
+		}
+	}
+
+	model, err := s.resolveRequestedModel(r.Context(), providerRuntime, modelCandidate)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, fmt.Sprintf("resolve model: %v", err))
 		return
@@ -181,7 +204,7 @@ func (s *service) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if isClaudeProviderType(providerRuntime.Type) {
-		s.handleCreateClaudeSession(w, req, managed, providerRuntime)
+		s.handleCreateClaudeSession(w, req, managed, providerRuntime, providerConfig)
 		return
 	}
 	if !isCopilotProviderType(providerRuntime.Type) {
@@ -268,6 +291,7 @@ func (s *service) runClaudeQuery(managed *managedSession, ctx context.Context, c
 
 	userMessage, err := buildClaudeUserMessage(prompt, attachments, managed.workingDirectory)
 	if err != nil {
+		logErrorf("claude query session=%s: build message: %v", managed.id(), err)
 		managed.broadcastClaudeEvent("assistant.error", map[string]any{
 			"messageId": messageID,
 			"error":     err.Error(),
@@ -291,6 +315,7 @@ func (s *service) runClaudeQuery(managed *managedSession, ctx context.Context, c
 	requestOptions := anthropicRequestOptionsFromHeaders(requestHeaders)
 	clientOptions, optionsErr := anthropicClientOptionsFromManaged(managed)
 	if optionsErr != nil {
+		logErrorf("claude query session=%s: credentials: %v", managed.id(), optionsErr)
 		managed.broadcastClaudeEvent("assistant.error", map[string]any{
 			"messageId": messageID,
 			"error":     optionsErr.Error(),
@@ -302,6 +327,7 @@ func (s *service) runClaudeQuery(managed *managedSession, ctx context.Context, c
 	stream := client.Messages.NewStreaming(ctx, params, requestOptions...)
 	if stream == nil {
 		err := errors.New("failed to initialize anthropic stream")
+		logErrorf("claude query session=%s: %v", managed.id(), err)
 		managed.broadcastClaudeEvent("assistant.error", map[string]any{
 			"messageId": messageID,
 			"error":     err.Error(),
@@ -338,6 +364,7 @@ func (s *service) runClaudeQuery(managed *managedSession, ctx context.Context, c
 			managed.broadcastClaudeEvent("assistant.turn_end", map[string]any{"messageId": messageID, "aborted": true}, messageID)
 			return
 		}
+		logErrorf("claude query session=%s: stream error: %v", managed.id(), err)
 		managed.broadcastClaudeEvent("assistant.error", map[string]any{
 			"messageId": messageID,
 			"error":     err.Error(),

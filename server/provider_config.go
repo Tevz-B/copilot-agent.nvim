@@ -44,11 +44,14 @@ func providerConfigForSession(provider string, overrides sessionProviderOverride
 	}
 	bearerToken := strings.TrimSpace(overrides.BearerToken)
 	if bearerToken == "" {
-		bearerToken = strings.TrimSpace(os.Getenv("ANTHROPIC_AUTH_TOKEN"))
+		bearerToken = firstNonEmpty(
+			strings.TrimSpace(os.Getenv("ANTHROPIC_AUTH_TOKEN")),
+			strings.TrimSpace(os.Getenv("ANTHROPIC_BEARER_TOKEN")),
+		)
 	}
 
 	if apiKey == "" && bearerToken == "" {
-		return nil, normalized, errors.New("missing Anthropic credentials: set ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN or pass providerApiKey/providerBearerToken")
+		return nil, normalized, errors.New("missing Anthropic credentials: set ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN (or ANTHROPIC_BEARER_TOKEN) or pass providerApiKey/providerBearerToken")
 	}
 
 	return &copilot.ProviderConfig{
@@ -120,10 +123,10 @@ func listAnthropicModels(ctx context.Context, providerConfig *copilot.ProviderCo
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("anthropic-version", "2023-06-01")
-	if providerConfig.BearerToken != "" {
-		req.Header.Set("Authorization", "Bearer "+providerConfig.BearerToken)
-	} else if providerConfig.APIKey != "" {
+	if providerConfig.APIKey != "" {
 		req.Header.Set("x-api-key", providerConfig.APIKey)
+	} else if providerConfig.BearerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+providerConfig.BearerToken)
 	}
 
 	resp, err := http.DefaultClient.Do(req)

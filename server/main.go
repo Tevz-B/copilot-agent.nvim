@@ -447,11 +447,15 @@ func (s *service) providerRuntime(name string) (providerRuntime, bool) {
 		return providerRuntime{}, false
 	}
 	if len(s.providers) == 0 {
-		ptype, err := normalizeProvider(s.provider)
+		defaultType, err := normalizeProvider(s.provider)
 		if err != nil {
-			ptype = providerCopilot
+			defaultType = providerCopilot
 		}
 		defaultName := providerKey(name)
+		ptype := defaultType
+		if requestedType, reqErr := normalizeProvider(defaultName); reqErr == nil && requestedType != "" {
+			ptype = requestedType
+		}
 		if defaultName == "" {
 			defaultName = providerKey(ptype)
 		}
@@ -468,7 +472,33 @@ func (s *service) providerRuntime(name string) (providerRuntime, bool) {
 		key = s.defaultProviderName()
 	}
 	rt, ok := s.providers[key]
-	return rt, ok
+	if ok {
+		return rt, true
+	}
+
+	// Compatibility: allow explicit built-in provider requests even when the
+	// current providers map only defines a single default provider.
+	switch key {
+	case providerCopilot:
+		return providerRuntime{
+			Name:               providerCopilot,
+			Type:               providerCopilot,
+			Model:              strings.TrimSpace(s.defaultModel),
+			ClaudeAPIKeyEnv:    defaultClaudeAPIKeyEnv(nil),
+			ClaudeAuthTokenEnv: defaultClaudeAuthTokenEnv(nil),
+		}, true
+	case providerClaude:
+		return providerRuntime{
+			Name:               providerClaude,
+			Type:               providerClaude,
+			Model:              "",
+			ClaudeAPIKeyEnv:    defaultClaudeAPIKeyEnv(nil),
+			ClaudeAuthTokenEnv: defaultClaudeAuthTokenEnv(nil),
+			ClaudeBaseURL:      strings.TrimSpace(os.Getenv("ANTHROPIC_BASE_URL")),
+		}, true
+	default:
+		return providerRuntime{}, false
+	}
 }
 
 func (s *service) requestedProviderName(r *http.Request, bodyProvider string) (string, error) {
@@ -825,7 +855,7 @@ func main() {
 			if !ok || !isClaudeProviderType(rt.Type) {
 				continue
 			}
-			if firstNonEmpty(os.Getenv(rt.ClaudeAPIKeyEnv), os.Getenv(rt.ClaudeAuthTokenEnv)) != "" {
+			if firstNonEmpty(os.Getenv(rt.ClaudeAPIKeyEnv), os.Getenv(rt.ClaudeAuthTokenEnv), os.Getenv("ANTHROPIC_BEARER_TOKEN")) != "" {
 				claudeCredentialPresent = true
 				break
 			}

@@ -1357,10 +1357,14 @@ local function mcp_entry_disabled_from_config(name, path)
     return type(value) == 'table' and value.disabled == true
   end
 
+  local function is_array_list(value)
+    return (islist and islist(value)) or (type(value) == 'table' and value[1] ~= nil)
+  end
+
   for _, container in ipairs({ 'mcpServers', 'servers' }) do
     local servers = decoded[container]
     if type(servers) == 'table' then
-      if islist and islist(servers) then
+      if is_array_list(servers) then
         for _, entry in ipairs(servers) do
           if type(entry) == 'string' and entry == name then
             return false
@@ -1539,14 +1543,16 @@ local function discovered_session_items()
   local items = {}
   for _, id in ipairs(order) do
     local session = merged[id]
-    local summary = utils.truncate_session_summary(session_names.resolve(session.summary, id), session_label_max_len)
-    local formatted_id = utils.format_session_id(id)
-    local label = summary ~= '' and (summary .. ' [' .. formatted_id .. ']') or formatted_id
-    table.insert(items, {
-      id = id,
-      label = label,
-      summary = (session_names.resolve(session.summary, id) or ''):lower(),
-    })
+    if not utils.is_side_question_session(session) then
+      local summary = utils.truncate_session_summary(session_names.resolve(session.summary, id), session_label_max_len)
+      local formatted_id = utils.format_session_id(id)
+      local label = summary ~= '' and (summary .. ' [' .. formatted_id .. ']') or formatted_id
+      table.insert(items, {
+        id = id,
+        label = label,
+        summary = (session_names.resolve(session.summary, id) or ''):lower(),
+      })
+    end
   end
 
   table.sort(items, function(left, right)

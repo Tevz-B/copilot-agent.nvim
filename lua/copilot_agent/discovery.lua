@@ -40,6 +40,10 @@ local function read_json_file(path)
   return http.decode_json(table.concat(vim.fn.readfile(path), '\n'))
 end
 
+local function is_array_list(value)
+  return (vim.islist and vim.islist(value)) or (type(value) == 'table' and value[1] ~= nil)
+end
+
 function M.agent_items()
   local wd = working_directory()
   local files = {}
@@ -131,7 +135,7 @@ function M.mcp_items()
     if type(servers) ~= 'table' then
       return
     end
-    if vim.islist and vim.islist(servers) then
+    if is_array_list(servers) then
       for _, entry in ipairs(servers) do
         if type(entry) == 'string' then
           add_item(entry, path)

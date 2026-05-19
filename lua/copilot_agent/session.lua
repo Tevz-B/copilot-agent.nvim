@@ -72,6 +72,7 @@ local prompt_supported_model_selection = model.prompt_supported_model_selection
 local format_session_id = utils.format_session_id
 local truncate_session_summary = utils.truncate_session_summary
 local unavailable_model_from_error = utils.unavailable_model_from_error
+local partition_side_question_sessions = utils.partition_side_question_sessions
 
 local M = {}
 local create_session
@@ -160,14 +161,11 @@ local function resolve_available_provider(preferred)
   -- Try fallback providers
   for _, candidate in ipairs(supported_providers) do
     if candidate ~= preferred and is_provider_available(candidate) then
-      log(
-        string.format('Provider "%s" is not available; falling back to "%s"', preferred, candidate),
-        vim.log.levels.INFO
-      )
+      log(string.format('Provider "%s" is not available; falling back to "%s"', preferred, candidate), vim.log.levels.INFO)
       return candidate, nil
     end
   end
-  return nil, 'No provider is available. Install the Copilot CLI binary or configure Claude credentials (ANTHROPIC_API_KEY).'
+  return nil, 'No provider is available. Install the Copilot CLI binary or configure Claude credentials (ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN).'
 end
 
 local function current_provider()
@@ -312,11 +310,21 @@ local function session_provider_of(session, fallback_provider)
   end
 
   local fallback = provider_key(fallback_provider)
-  if fallback == 'claude' then
-    return nil
-  end
 
   local session_id = session_id_of(session)
+
+  -- Backward compatibility: older persisted sessions often do not carry an
+  -- explicit provider field. Infer from the session ID prefix when possible.
+  if type(session_id) == 'string' and session_id ~= '' then
+    local lowered = session_id:lower()
+    if lowered:find('^claude%-') then
+      return 'claude'
+    end
+    if lowered:find('^copilot%-') or lowered:find('^nvim%-') then
+      return 'copilot'
+    end
+  end
+
   if session_id then
     local mapped = session_provider(session_id, fallback_provider)
     if provider_key(mapped) then
@@ -405,6 +413,41 @@ end
 
 local request_with_managed_base_url
 
+local function prune_side_question_sessions(request_fn, sessions, callback)
+  local visible_sessions, hidden_sessions = partition_side_question_sessions(sessions)
+  if #hidden_sessions == 0 then
+    callback(visible_sessions, 0)
+    return
+  end
+
+  local deleted_count = 0
+
+  local function step(index)
+    if index > #hidden_sessions then
+      callback(visible_sessions, deleted_count)
+      return
+    end
+
+    local hidden = hidden_sessions[index]
+    local hidden_id = session_id_of(hidden)
+    if not hidden_id or hidden_id == '' then
+      step(index + 1)
+      return
+    end
+
+    request_fn('DELETE', string.format('/sessions/%s?delete=true', hidden_id), nil, function(_, err)
+      if err then
+        log('failed to prune leaked /ask session ' .. format_session_id(hidden_id) .. ': ' .. tostring(err), vim.log.levels.WARN)
+      else
+        deleted_count = deleted_count + 1
+      end
+      step(index + 1)
+    end, { auto_start = false })
+  end
+
+  step(1)
+end
+
 local function fetch_sorted_sessions(context, callback, opts)
   opts = opts or {}
   local request_fn = opts.strict_discovery == true and request_with_managed_base_url or request
@@ -415,14 +458,27 @@ local function fetch_sorted_sessions(context, callback, opts)
     end
 
     local sessions = merge_sessions(response)
-    log_session_catalog(context, sessions)
-    log(string.format('%s persisted=%d live=%d merged=%d', context, #((response and response.persisted) or {}), #((response and response.live) or {}), #sessions), vim.log.levels.INFO)
-    table.sort(sessions, function(a, b)
-      local ta = session_sort_key(a)
-      local tb = session_sort_key(b)
-      return ta > tb
+    prune_side_question_sessions(request_fn, sessions, function(visible_sessions, deleted_count)
+      log_session_catalog(context, visible_sessions)
+      log(
+        string.format(
+          '%s persisted=%d live=%d merged=%d visible=%d pruned=%d',
+          context,
+          #((response and response.persisted) or {}),
+          #((response and response.live) or {}),
+          #sessions,
+          #visible_sessions,
+          deleted_count
+        ),
+        vim.log.levels.INFO
+      )
+      table.sort(visible_sessions, function(a, b)
+        local ta = session_sort_key(a)
+        local tb = session_sort_key(b)
+        return ta > tb
+      end)
+      callback(visible_sessions, nil, response)
     end)
-    callback(sessions, nil, response)
   end, { auto_start = false })
 end
 
@@ -765,6 +821,7 @@ function M.latest_project_session_sync()
   end
 
   local sessions = merge_sessions(response)
+  sessions = partition_side_question_sessions(sessions)
   table.sort(sessions, function(a, b)
     return session_sort_key(a) > session_sort_key(b)
   end)
@@ -925,6 +982,38 @@ function M.pick_or_create_session(callback)
     )
 
     if #matching == 0 then
+      local fallback_matching = {}
+      for _, s in ipairs(sessions) do
+        if session_cwd_of(s) == wd then
+          table.insert(fallback_matching, s)
+        end
+      end
+
+      table.sort(fallback_matching, function(a, b)
+        return session_sort_key(a) > session_sort_key(b)
+      end)
+
+      if #fallback_matching > 0 then
+        local s = fallback_matching[1]
+        local fallback_provider = session_provider_of(s, 'copilot')
+        log(
+          string.format('pick_or_create_session no %s matches; resuming fallback %s session %s', tostring(target_provider), tostring(fallback_provider or 'unknown'), format_session_id(s.sessionId)),
+          vim.log.levels.WARN
+        )
+        resume_known_session(s, callback, {
+          resolve_pending = true,
+          append_message = string.format(
+            'No %s sessions found for this project; resuming %s session %s',
+            tostring(target_provider),
+            tostring(fallback_provider or 'existing'),
+            formatted_session_label(s.summary, s.sessionId)
+          ),
+          log_message = 'pick_or_create_session fallback-resume ' .. formatted_session_label(s.summary, s.sessionId),
+          resume_opts = { provider = fallback_provider },
+        })
+        return
+      end
+
       log('pick_or_create_session no matching session; creating new session', vim.log.levels.WARN)
       create_session(callback, { strict_discovery = strict_startup_discovery })
       return
@@ -1112,6 +1201,20 @@ create_session = function(callback, opts)
     state.startup_session_discovery = false
     state.creating_session = false
     if err then
+      local unknown_provider = type(err) == 'string' and err:match('unknown provider "([^"]+)"') or nil
+      if unknown_provider and provider ~= 'copilot' and opts.provider_fallback_attempted ~= true then
+        append_entry('system', string.format('Provider "%s" is not available on this service; retrying with copilot.', unknown_provider))
+        state.creating_session = true
+        create_session(
+          callback,
+          vim.tbl_extend('force', {}, opts, {
+            provider = 'copilot',
+            provider_fallback_attempted = true,
+            skip_provider_check = true,
+          })
+        )
+        return
+      end
       if is_stale_service_error(err) and opts.service_restart_attempted ~= true then
         append_entry('system', 'Copilot service lost its embedded CLI; reconnecting to the shared service and retrying.')
         service.ensure_service_live(function(start_err)
@@ -1525,7 +1628,7 @@ function M.switch_provider(provider)
 
         local matching = {}
         for _, session in ipairs(sessions or {}) do
-          local session_provider_name = provider_key((state.provider_sessions or {})[session.sessionId])
+          local session_provider_name = session_provider_of(session, provider_name)
           if session_provider_name == provider_name then
             table.insert(matching, session)
           end

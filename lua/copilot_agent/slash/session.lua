@@ -9,6 +9,7 @@ local utils = require('copilot_agent.utils')
 local state = cfg.state
 local notify = cfg.notify
 local append_entry = render.append_entry
+local partition_side_question_sessions = utils.partition_side_question_sessions
 
 -- These modules are accessed via require() each time because tests may
 -- reload them between test cases.
@@ -87,6 +88,7 @@ local function merge_session_catalog(response)
   for _, session_id in ipairs(order) do
     sessions[#sessions + 1] = merged[session_id]
   end
+  sessions = partition_side_question_sessions(sessions)
   table.sort(sessions, function(left, right)
     local left_key = first_non_empty_string(left.modifiedTime, left.startTime, left.createdAt) or ''
     local right_key = first_non_empty_string(right.modifiedTime, right.startTime, right.createdAt) or ''

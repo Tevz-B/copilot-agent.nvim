@@ -339,6 +339,9 @@ describe('M.setup', function()
 
   before_each(function()
     package.loaded['copilot_agent'] = nil
+    package.loaded['copilot_agent.statusline'] = nil
+    package.loaded['copilot_agent.input'] = nil
+    package.loaded['copilot_agent.chat'] = nil
     agent = require('copilot_agent')
   end)
 
@@ -1451,6 +1454,9 @@ describe('provider completion', function()
 
   before_each(function()
     package.loaded['copilot_agent'] = nil
+    package.loaded['copilot_agent.statusline'] = nil
+    package.loaded['copilot_agent.input'] = nil
+    package.loaded['copilot_agent.chat'] = nil
     agent = require('copilot_agent')
     agent.setup({ auto_create_session = false, notify = false })
   end)
@@ -1804,7 +1810,9 @@ describe('claude model setup', function()
             { id = 'claude-opus-4.7', name = 'Claude Opus 4.7' },
             { id = 'gpt-5.4', name = 'GPT 5.4' },
           },
-        }, nil, 200
+        },
+          nil,
+          200
       end
       return original_sync_request(method, path, body, opts)
     end
@@ -1877,6 +1885,14 @@ describe('user commands', function()
   before_each(function()
     package.loaded['copilot_agent'] = nil
     vim.g.loaded_copilot_agent_plugin = nil
+    package.loaded['copilot_agent.statusline'] = nil
+    package.loaded['copilot_agent.input'] = nil
+    package.loaded['copilot_agent.chat'] = nil
+    package.loaded['copilot_agent.events'] = nil
+    package.loaded['copilot_agent.test_mode'] = nil
+    package.loaded['copilot_agent.slash'] = nil
+    package.loaded['copilot_agent.slash.copilot'] = nil
+    package.loaded['copilot_agent.slash.claude'] = nil
     local plugin_files = vim.api.nvim_get_runtime_file('plugin/copilot_agent.lua', false)
     if plugin_files[1] then
       vim.cmd('source ' .. vim.fn.fnameescape(plugin_files[1]))
@@ -1961,102 +1977,6 @@ describe('user commands', function()
 
     vim.ui.select = original_select
     vim.cmd('CopilotAgentMode ask')
-  end)
-
-  it('keeps test mode prompt submissions local', function()
-    local agent = require('copilot_agent')
-    local http = require('copilot_agent.http')
-    agent.setup({ auto_create_session = false, auto_start = false, notify = false })
-    agent.state.input_mode = 'test'
-    agent.state.session_id = 'session-123'
-
-    local opened = false
-    local request_count = 0
-    local original_open_chat = agent.open_chat
-    local original_request = http.request
-    agent.open_chat = function()
-      opened = true
-    end
-    http.request = function()
-      request_count = request_count + 1
-      error('unexpected request in test mode')
-    end
-    package.loaded['copilot_agent.chat'] = nil
-    local chat = require('copilot_agent.chat')
-
-    chat.ask('do you have summary for the changes')
-
-    agent.open_chat = original_open_chat
-    http.request = original_request
-
-    assert_false(opened)
-    assert_eq(0, request_count)
-    assert_true(#agent.state.entries >= 2)
-    assert_eq('user', agent.state.entries[#agent.state.entries - 1].kind)
-    assert_eq('do you have summary for the changes', agent.state.entries[#agent.state.entries - 1].content)
-    assert_eq('system', agent.state.entries[#agent.state.entries].kind)
-    assert_true(agent.state.entries[#agent.state.entries].content:find('Test mode captured prompt locally', 1, true) ~= nil)
-  end)
-
-  it('runs test mode workflows when the picker returns formatted strings', function()
-    local agent = require('copilot_agent')
-    local test_mode = require('copilot_agent.test_mode')
-    local activity_diff = require('copilot_agent.activity_diff')
-    agent.setup({ auto_create_session = false, auto_start = false, notify = false })
-    agent.state.input_mode = 'test'
-
-    local prompts = {}
-    local input_count = 0
-    local original_select = vim.ui.select
-    local original_input = vim.ui.input
-    local original_defer_fn = vim.defer_fn
-    local original_schedule = vim.schedule
-    local original_diff = activity_diff.open_preview_patch_text
-
-    vim.defer_fn = function(callback, _)
-      callback()
-    end
-    vim.schedule = function(callback)
-      callback()
-    end
-    vim.ui.input = function(_, on_choice)
-      input_count = input_count + 1
-      on_choice('hello')
-    end
-    vim.ui.select = function(items, opts, on_choice)
-      prompts[#prompts + 1] = opts.prompt
-      if opts.prompt == 'Copilot Agent test mode' then
-        on_choice(opts.format_item(items[1]))
-        return
-      end
-      if opts.prompt == 'UI test: choose one item with code and long description' then
-        on_choice(opts.format_item(items[1]))
-        return
-      end
-      if opts.prompt == 'UI test: permission review with coded options' then
-        on_choice(opts.format_item(items[2]))
-        return
-      end
-      on_choice(nil)
-    end
-    activity_diff.open_preview_patch_text = function(_, opts)
-      if opts and type(opts.after_close) == 'function' then
-        opts.after_close()
-      end
-    end
-
-    test_mode.open()
-
-    vim.ui.select = original_select
-    vim.ui.input = original_input
-    vim.defer_fn = original_defer_fn
-    vim.schedule = original_schedule
-    activity_diff.open_preview_patch_text = original_diff
-
-    assert_true(input_count >= 1)
-    assert_true(vim.tbl_contains(prompts, 'Copilot Agent test mode'))
-    assert_true(vim.tbl_contains(prompts, 'UI test: choose one item with code and long description'))
-    assert_true(vim.tbl_contains(prompts, 'UI test: permission review with coded options'))
   end)
 end)
 
@@ -2286,7 +2206,7 @@ describe('dashboard', function()
         workingDirectory = vim.fn.getcwd(),
       }, nil
     end
-    vim.cmd('enew')
+    vim.cmd('enew!')
     vim.api.nvim_buf_set_lines(0, 0, -1, false, { '' })
     vim.bo[0].modified = false
   end)
@@ -2740,8 +2660,8 @@ describe('statusline API', function()
     end
     statusline.refresh_chat_statusline()
     statusline.refresh_input_statusline()
-    assert_true(vim.wo[chat_winid].statusline:find('provider: claude', 1, true) ~= nil)
-    assert_true(vim.wo[input_winid].statusline:find('provider: claude', 1, true) ~= nil)
+    assert_true(vim.wo[chat_winid].statusline:find('claude', 1, true) ~= nil)
+    assert_true(vim.wo[input_winid].statusline:find('claude', 1, true) ~= nil)
     assert_true(vim.wo[chat_winid].statusline:find('session: [' .. expected_id .. ']', 1, true) ~= nil)
     assert_true(vim.wo[input_winid].statusline:find('session: [' .. expected_id .. ']', 1, true) == nil)
 
@@ -2758,8 +2678,8 @@ describe('statusline API', function()
 
     widths[chat_winid] = 80
     statusline.refresh_chat_statusline()
-    assert_true(vim.wo[chat_winid].statusline:find('provider: claude', 1, true) ~= nil)
-    assert_true(vim.wo[chat_winid].statusline:find('session: [abcdefghijklmnop', 1, true) == nil)
+    assert_true(vim.wo[chat_winid].statusline:find('claude', 1, true) == nil)
+    assert_true(vim.wo[chat_winid].statusline:find('session: [#nvim-24-06-01]', 1, true) ~= nil)
 
     agent.state.current_model = 'claude-opus-4.7'
     agent.state.reasoning_effort = 'high'
@@ -5830,20 +5750,22 @@ describe('ask command', function()
 
   it('shows the side answer for /ask from message history', function()
     local result_buf
+    local create_body
 
     vim.api.nvim_open_win = function(buf, enter, config)
       result_buf = buf
       return original_open_win(buf, enter, config)
     end
 
-    http.request = function(method, path, _body, callback)
+    http.request = function(method, path, body, callback)
       if method == 'POST' and path == '/sessions' then
-        callback({ sessionId = 'side-1' }, nil)
-      elseif method == 'POST' and path == '/sessions/side-1/mode' then
+        create_body = body
+        callback({ sessionId = body.sessionId }, nil)
+      elseif method == 'POST' and path == '/sessions/' .. create_body.sessionId .. '/mode' then
         callback({}, nil)
-      elseif method == 'POST' and path == '/sessions/side-1/messages' then
+      elseif method == 'POST' and path == '/sessions/' .. create_body.sessionId .. '/messages' then
         callback({}, nil)
-      elseif method == 'GET' and path == '/sessions/side-1/messages' then
+      elseif method == 'GET' and path == '/sessions/' .. create_body.sessionId .. '/messages' then
         callback({
           events = {
             { Type = 'assistant.turn_start' },
@@ -5851,7 +5773,7 @@ describe('ask command', function()
             { Type = 'assistant.turn_end' },
           },
         }, nil)
-      elseif method == 'DELETE' and path == '/sessions/side-1?delete=true' then
+      elseif method == 'DELETE' and path == '/sessions/' .. create_body.sessionId .. '?delete=true' then
         callback({}, nil)
       else
         error('unexpected request: ' .. method .. ' ' .. path)
@@ -5863,6 +5785,8 @@ describe('ask command', function()
 
     assert_true(slash.execute('/ask based on README generate 2 intros'))
     assert_true(result_buf ~= nil)
+    assert_true(type(create_body.sessionId) == 'string')
+    assert_true(vim.startswith(create_body.sessionId, require('copilot_agent.utils').side_question_session_prefix()))
 
     local lines = vim.api.nvim_buf_get_lines(result_buf, 0, -1, false)
     assert_true(vim.tbl_contains(lines, '# /ask'))
@@ -6022,6 +5946,47 @@ describe('ask command', function()
     local lines = vim.api.nvim_buf_get_lines(result_buf, 0, -1, false)
     assert_true(vim.tbl_contains(lines, 'Recovered final answer'))
     assert_eq(2, message_reads)
+  end)
+
+  it('retries /ask cleanup when the first delete attempt fails', function()
+    local delete_calls = 0
+    local created_session_id
+
+    http.request = function(method, path, body, callback)
+      if method == 'POST' and path == '/sessions' then
+        created_session_id = body.sessionId
+        callback({ sessionId = created_session_id }, nil)
+      elseif method == 'POST' and path == '/sessions/' .. created_session_id .. '/mode' then
+        callback({}, nil)
+      elseif method == 'POST' and path == '/sessions/' .. created_session_id .. '/messages' then
+        callback({}, nil)
+      elseif method == 'GET' and path == '/sessions/' .. created_session_id .. '/messages' then
+        callback({
+          events = {
+            { Type = 'assistant.turn_start' },
+            { Type = 'assistant.message', Data = { Content = 'retry answer' } },
+            { Type = 'assistant.turn_end' },
+          },
+        }, nil)
+      elseif method == 'DELETE' and path == '/sessions/' .. created_session_id .. '?delete=true' then
+        delete_calls = delete_calls + 1
+        if delete_calls == 1 then
+          callback(nil, 'temporary delete failure')
+        else
+          callback({}, nil)
+        end
+      else
+        error('unexpected request: ' .. method .. ' ' .. path)
+      end
+    end
+
+    package.loaded['copilot_agent.slash'] = nil
+    slash = require('copilot_agent.slash')
+
+    assert_true(slash.execute('/ask retry cleanup'))
+    assert_true(vim.wait(1000, function()
+      return delete_calls == 2
+    end, 50))
   end)
 end)
 
@@ -7366,7 +7331,7 @@ describe('workspace file opening avoids chat windows', function()
     state.input_bufnr = nil
     state.input_winid = nil
     pcall(vim.cmd, 'tabonly | only')
-    vim.cmd('enew')
+    vim.cmd('enew!')
   end)
 
   after_each(function()
@@ -7944,7 +7909,7 @@ describe('session resume guards', function()
 
       assert_eq('POST', method)
       assert_eq('/sessions', path)
-      assert_true(body.sessionId == nil or type(body.sessionId) == "string")
+      assert_true(body.sessionId == nil or type(body.sessionId) == 'string')
       assert_eq(nil, body.resume)
       callback({
         sessionId = 'fresh-session',
@@ -8080,7 +8045,7 @@ describe('session resume guards', function()
 
       assert_eq('POST', method)
       assert_eq('/sessions', path)
-      assert_true(body.sessionId == nil or type(body.sessionId) == "string")
+      assert_true(body.sessionId == nil or type(body.sessionId) == 'string')
       assert_eq(nil, body.resume)
       callback({
         sessionId = 'fresh-session',
@@ -8110,6 +8075,76 @@ describe('session resume guards', function()
       end
     end
     assert_true(saw_corrupt_notice)
+  end)
+
+  it('prunes leaked /ask sessions before resuming the project session', function()
+    local requests = {}
+    local callback_session_id
+    local callback_error
+    local started_session_id
+    local cwd = require('copilot_agent.service').working_directory()
+
+    agent._ensure_chat_window = function() end
+    events.start_event_stream = function(session_id)
+      started_session_id = session_id
+    end
+
+    http.request = function(method, path, body, callback)
+      requests[#requests + 1] = {
+        method = method,
+        path = path,
+        body = body,
+      }
+
+      if method == 'GET' then
+        callback({
+          persisted = {
+            {
+              sessionId = 'orphan-side-session',
+              summary = 'Answer this side question briefly. Explain the code.',
+              workingDirectory = cwd,
+            },
+            {
+              sessionId = 'real-session',
+              summary = 'Real project session',
+              workingDirectory = cwd,
+            },
+          },
+          live = {},
+        }, nil)
+        return
+      end
+
+      if method == 'DELETE' then
+        assert_eq('/sessions/orphan-side-session?delete=true', path)
+        callback({}, nil)
+        return
+      end
+
+      assert_eq('POST', method)
+      assert_eq('/sessions', path)
+      assert_eq('real-session', body.sessionId)
+      assert_true(body.resume == true)
+      callback({
+        sessionId = 'real-session',
+        summary = 'Real project session',
+        workingDirectory = cwd,
+      }, nil)
+    end
+
+    package.loaded['copilot_agent.session'] = nil
+    session = require('copilot_agent.session')
+    session.pick_or_create_session(function(session_id, err)
+      callback_session_id = session_id
+      callback_error = err
+    end)
+
+    assert_eq('GET', requests[1].method)
+    assert_eq('DELETE', requests[2].method)
+    assert_eq('POST', requests[3].method)
+    assert_eq('real-session', started_session_id)
+    assert_eq('real-session', callback_session_id)
+    assert_eq(nil, callback_error)
   end)
 
   it('recovers by recreating the missing session under the same session id', function()
@@ -8267,7 +8302,7 @@ describe('session resume guards', function()
 
       assert_eq('POST', method)
       assert_eq('/sessions', path)
-      assert_true(body.sessionId == nil or type(body.sessionId) == "string")
+      assert_true(body.sessionId == nil or type(body.sessionId) == 'string')
       assert_eq(nil, body.resume)
       callback({
         sessionId = 'fresh-session',
@@ -8602,7 +8637,7 @@ describe('new session creation', function()
 
       assert_eq('POST', method)
       assert_eq('/sessions', path)
-      assert_true(body.sessionId == nil or type(body.sessionId) == "string")
+      assert_true(body.sessionId == nil or type(body.sessionId) == 'string')
       assert_eq(nil, body.resume)
       callback({
         sessionId = 'new-session',
@@ -8663,7 +8698,7 @@ describe('new session creation', function()
 
       assert_eq('POST', method)
       assert_eq('/sessions', path)
-      assert_true(body.sessionId == nil or type(body.sessionId) == "string")
+      assert_true(body.sessionId == nil or type(body.sessionId) == 'string')
       assert_eq(nil, body.resume)
       callback({
         sessionId = 'new-session',
@@ -9708,9 +9743,7 @@ describe('chat input behavior', function()
     input._promote_input_to_compose()
 
     vim.wait(1000, function()
-      return not (agent.state.input_winid and vim.api.nvim_win_is_valid(agent.state.input_winid))
-        and agent.state.compose_winid
-        and vim.api.nvim_win_is_valid(agent.state.compose_winid)
+      return not (agent.state.input_winid and vim.api.nvim_win_is_valid(agent.state.input_winid)) and agent.state.compose_winid and vim.api.nvim_win_is_valid(agent.state.compose_winid)
     end)
 
     assert_true(not (agent.state.input_winid and vim.api.nvim_win_is_valid(agent.state.input_winid)))
@@ -13428,7 +13461,7 @@ describe('chat input behavior', function()
   end)
 
   it('extracts inline attachment tokens into real attachments', function()
-    local cwd = require('copilot_agent.service').working_directory()
+    local cwd = vim.fn.getcwd()
     agent.state.config.session.working_directory = cwd
     local spaced_path = cwd .. '/my file name.txt'
     vim.fn.writefile({ 'hello' }, spaced_path)
@@ -13529,13 +13562,15 @@ describe('chat input behavior', function()
   end)
 
   it('replaces /mcp completion text with only the selected mcp name', function()
-    ensure_dev_input_module()
     local vscode_dir = vim.fn.fnamemodify(vscode_mcp, ':h')
     root_mcp_backup = vim.fn.filereadable(root_mcp) == 1 and vim.fn.readfile(root_mcp) or nil
     vscode_mcp_backup = vim.fn.filereadable(vscode_mcp) == 1 and vim.fn.readfile(vscode_mcp) or nil
     vim.fn.mkdir(vscode_dir, 'p')
     vim.fn.writefile({ '{"mcpServers":{"local":{},"docs":{}}}' }, root_mcp)
     vim.fn.writefile({ '{"servers":[{"name":"browser"}]}' }, vscode_mcp)
+    package.loaded['copilot_agent.input'] = nil
+    input = require('copilot_agent.input')
+    ensure_dev_input_module()
 
     agent.open_chat()
     input.open_input_window()

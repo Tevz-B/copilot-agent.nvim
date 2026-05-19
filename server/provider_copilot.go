@@ -181,6 +181,19 @@ func withCopilotClientRetry[T any](s *service, operation string, fn func(copilot
 func (s *service) handleHealth(w http.ResponseWriter, r *http.Request) {
 	providerRuntime, err := s.requestedProvider(r, "")
 	if err != nil {
+		// Health is a liveness probe used during startup; provider mismatches
+		// should not block service readiness checks.
+		requested := strings.TrimSpace(r.URL.Query().Get("provider"))
+		if requested != "" {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"ok":              true,
+				"provider":        requested,
+				"providerType":    "unknown",
+				"defaultProvider": s.defaultProviderName(),
+				"warning":         err.Error(),
+			})
+			return
+		}
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}

@@ -49,6 +49,8 @@ local RESULT_FLOAT_BORDER_LINES = 2 -- Reserve vertical space for the float bord
 local RESULT_FLOAT_HEIGHT_RATIO = 0.8 -- Leave editor context visible above and below slash-command result windows.
 local SIDE_QUESTION_TIMEOUT_MS = 120000 -- Side-question sessions should fail fast rather than polling forever.
 local SIDE_QUESTION_POLL_INTERVAL_MS = 400 -- Poll often enough to feel responsive without hammering the local service.
+local SIDE_QUESTION_DELETE_RETRIES = 3 -- Best-effort retries avoid leaking temporary /ask sessions on transient local-service failures.
+local SIDE_QUESTION_DELETE_RETRY_DELAY_MS = 200
 local working_directory = service.working_directory
 local mode_permission = {
   ask = 'interactive',
@@ -141,7 +143,6 @@ local function open_path(path)
     notify('Opened with a fallback buffer after :edit failed: ' .. tostring(err), vim.log.levels.WARN)
   end
 end
-
 
 local function now_ms()
   local uv = vim.uv or vim.loop
@@ -245,11 +246,25 @@ local function show_markdown_result(title, lines)
 end
 
 local function delete_side_session(session_id, callback)
-  request('DELETE', string.format('/sessions/%s?delete=true', session_id), nil, function(_, err)
-    if callback then
-      callback(err)
-    end
-  end, { auto_start = false })
+  local function attempt_delete(attempts_remaining)
+    request('DELETE', string.format('/sessions/%s?delete=true', session_id), nil, function(_, err)
+      if err and attempts_remaining > 1 then
+        vim.defer_fn(function()
+          attempt_delete(attempts_remaining - 1)
+        end, SIDE_QUESTION_DELETE_RETRY_DELAY_MS)
+        return
+      end
+      if callback then
+        callback(err)
+      end
+    end, { auto_start = false })
+  end
+
+  attempt_delete(SIDE_QUESTION_DELETE_RETRIES)
+end
+
+local function new_side_question_session_id()
+  return string.format('%s%d-%s', utils.side_question_session_prefix(), now_ms(), service.client_id():sub(1, 8))
 end
 
 local function first_non_empty_string(...)
@@ -497,7 +512,6 @@ local function clear_session_command()
   session.clear_and_new_session()
   return true
 end
-
 
 set_input_mode = function(mode)
   local next_mode = vim.trim(mode or ''):lower()
@@ -1579,7 +1593,6 @@ local function lsp_command(args)
   return true
 end
 
-
 local function review_command(args, opts)
   local scope = vim.trim(args or '')
   local lines = {
@@ -1710,6 +1723,7 @@ local function ask_side_question(prompt, opts)
   end
 
   local request_body = vim.tbl_extend('force', {
+    sessionId = new_side_question_session_id(),
     clientId = service.client_id(),
     clientName = state.config.client_name,
     permissionMode = 'approve-reads',
@@ -1807,7 +1821,6 @@ local function session_tasks(args)
   return tasks.show(args)
 end
 
-
 local function todo_command()
   open_todo_float()
   return true
@@ -1874,11 +1887,11 @@ end
 M._extract_side_session_answer = extract_side_session_answer
 
 -- Internal helpers exposed for claude_slash.lua delegation.
-M._compact_history       = slash_checkpoint.compact_history
-M._context_command       = context_command
-M._diff_command          = diff_command
+M._compact_history = slash_checkpoint.compact_history
+M._context_command = context_command
+M._diff_command = diff_command
 M._clear_session_command = clear_session_command
-M._rewind_checkpoint     = slash_checkpoint.rewind_checkpoint
-M._agent_command         = agent_command
+M._rewind_checkpoint = slash_checkpoint.rewind_checkpoint
+M._agent_command = agent_command
 
 return M

@@ -76,6 +76,100 @@ local unavailable_model_from_error = utils.unavailable_model_from_error
 local M = {}
 local create_session
 
+--- Returns true when the workspace has more than one provider configured
+--- (e.g. both copilot and claude credentials are available).
+local function has_multiple_providers()
+  -- Check if claude provider has credentials configured
+  local claude_config = provider_request_config('claude')
+  if claude_config then
+    return true
+  end
+  -- Check if user explicitly set a non-default provider in config
+  local default = type(state.config) == 'table' and state.config.default_provider
+  if type(default) == 'string' and vim.trim(default):lower() ~= 'copilot' then
+    return true
+  end
+  -- Check if there are provider_sessions entries for multiple providers
+  if type(state.providers) == 'table' then
+    local has_copilot_sessions = false
+    local has_other_sessions = false
+    for pname, slot in pairs(state.providers) do
+      if type(slot) == 'table' and type(slot.provider_sessions) == 'table' and next(slot.provider_sessions) then
+        if pname == 'copilot' then
+          has_copilot_sessions = true
+        else
+          has_other_sessions = true
+        end
+      end
+    end
+    if has_copilot_sessions and has_other_sessions then
+      return true
+    end
+  end
+  return false
+end
+
+--- Derive a short project name from the working directory.
+local function project_name_from_cwd()
+  local cwd = working_directory()
+  if type(cwd) ~= 'string' or cwd == '' then
+    return 'project'
+  end
+  local name = vim.fn.fnamemodify(cwd, ':t')
+  if type(name) ~= 'string' or name == '' then
+    return 'project'
+  end
+  -- Sanitize: lowercase, replace non-alphanumeric with dash, collapse dashes
+  name = name:lower():gsub('[^%w]+', '-'):gsub('^-+', ''):gsub('-+$', '')
+  if name == '' then
+    return 'project'
+  end
+  return name
+end
+
+--- Generate a provider-prefixed session ID: provider-projectname-timestamp
+local function generate_session_id(provider)
+  local project = project_name_from_cwd()
+  local timestamp = tostring(os.time())
+  return string.format('%s-%s-%s', provider or 'copilot', project, timestamp)
+end
+
+--- Check whether a given provider CLI/credentials are available.
+--- Returns true if the provider can be used.
+local function is_provider_available(provider)
+  if provider == 'copilot' then
+    -- copilot is available if the service binary exists
+    local bin = service.installed_binary_path()
+    return vim.fn.executable(bin) == 1
+  end
+  if provider == 'claude' then
+    -- claude is available if credentials are configured
+    local claude_config = provider_request_config('claude')
+    return claude_config ~= nil
+  end
+  return false
+end
+
+--- Resolve the effective provider, falling back when the preferred one is unavailable.
+--- Returns (provider, error_message_or_nil).
+--- If no provider is available, returns (nil, error_message).
+local function resolve_available_provider(preferred)
+  if is_provider_available(preferred) then
+    return preferred, nil
+  end
+  -- Try fallback providers
+  for _, candidate in ipairs(supported_providers) do
+    if candidate ~= preferred and is_provider_available(candidate) then
+      log(
+        string.format('Provider "%s" is not available; falling back to "%s"', preferred, candidate),
+        vim.log.levels.INFO
+      )
+      return candidate, nil
+    end
+  end
+  return nil, 'No provider is available. Install the Copilot CLI binary or configure Claude credentials (ANTHROPIC_API_KEY).'
+end
+
 local function current_provider()
   if type(active_provider) == 'function' then
     local provider = active_provider()
@@ -965,8 +1059,31 @@ end
 create_session = function(callback, opts)
   opts = opts or {}
   local provider = set_active_provider(opts.provider)
+
+  -- Resolve provider availability: fall back or error if none available.
+  if not opts.skip_provider_check then
+    local resolved, provider_err = resolve_available_provider(provider)
+    if not resolved then
+      notify(provider_err, vim.log.levels.ERROR)
+      append_entry('error', provider_err)
+      on_session_ready(nil, provider_err)
+      return
+    end
+    if resolved ~= provider then
+      local unavailable_provider = provider
+      provider = set_active_provider(resolved)
+      append_entry('system', string.format('Provider "%s" unavailable; using "%s" instead.', unavailable_provider, resolved))
+    end
+  end
+
   local requested_wd = working_directory()
-  local requested_model = requested_model_for_session(opts.session_id, provider, opts.model)
+  -- Generate a provider-prefixed session ID when creating a new session
+  -- and the workspace has multiple providers configured.
+  local session_id = opts.session_id
+  if not session_id and has_multiple_providers() then
+    session_id = generate_session_id(provider)
+  end
+  local requested_model = requested_model_for_session(session_id, provider, opts.model)
   log(
     string.format(
       'create_session request provider=%s cwd=%s model=%s agent=%s permission=%s',
@@ -980,7 +1097,7 @@ create_session = function(callback, opts)
   )
   local request_fn = opts.strict_discovery == true and request_with_managed_base_url or request
   local request_body = vim.tbl_extend('force', {
-    sessionId = opts.session_id,
+    sessionId = session_id,
     clientId = service.client_id(),
     clientName = state.config.client_name,
     provider = provider,
@@ -1006,7 +1123,7 @@ create_session = function(callback, opts)
             return
           end
           state.creating_session = true
-          local retry_opts = vim.tbl_extend('force', {}, opts, { service_restart_attempted = true })
+          local retry_opts = vim.tbl_extend('force', {}, opts, { service_restart_attempted = true, skip_provider_check = true })
           create_session(callback, retry_opts)
         end)
         return
@@ -1040,6 +1157,7 @@ create_session = function(callback, opts)
           create_session(callback, {
             model = reselected_model,
             model_selection_attempts = false,
+            skip_provider_check = true,
           })
         end)
         return

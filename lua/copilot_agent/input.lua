@@ -1558,14 +1558,28 @@ end
 local function slash_root_completion_items(query)
   local items = {}
   local lowered_query = (query or ''):lower()
+  local provider = cfg.active_provider()
   for _, cmd in ipairs(SLASH_COMMANDS) do
-    local name = cmd.word:sub(2):lower()
-    if lowered_query == '' or vim.startswith(name, lowered_query) then
-      items[#items + 1] = {
-        word = cmd.word,
-        abbr = cmd.word,
-        menu = cmd.info,
-      }
+    -- Filter by provider: nil means available to all
+    local dominated = false
+    if cmd.providers then
+      dominated = true
+      for _, p in ipairs(cmd.providers) do
+        if p == provider then
+          dominated = false
+          break
+        end
+      end
+    end
+    if not dominated then
+      local name = cmd.word:sub(2):lower()
+      if lowered_query == '' or vim.startswith(name, lowered_query) then
+        items[#items + 1] = {
+          word = cmd.word,
+          abbr = cmd.word,
+          menu = cmd.info,
+        }
+      end
     end
   end
   return items

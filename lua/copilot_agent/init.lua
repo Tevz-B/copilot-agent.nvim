@@ -200,6 +200,23 @@ function M.setup(opts)
   state.provider_cache = {}
   state.provider_sessions = {}
   state.session_models = {}
+  -- Reset provider-scoped slots so stale model/mode state from a previous
+  -- setup() call does not leak into the new session.
+  -- TODO(migration): Once the flat fields above are removed, this block alone
+  -- will be the canonical reset path for all provider-scoped state.
+  if type(state.providers) == 'table' then
+    for _, slot in pairs(state.providers) do
+      if type(slot) == 'table' then
+        slot.current_model         = nil
+        slot.pending_session_model = nil
+        slot.session_models        = {}
+        slot.input_mode            = 'agent'
+        slot.reasoning_effort      = nil
+        slot.permission_mode       = 'interactive'
+        slot.provider_sessions     = {}
+      end
+    end
+  end
   state.dashboard_winid = nil
   state.dashboard_prompt_bufnr = nil
   state.dashboard_prompt_winid = nil

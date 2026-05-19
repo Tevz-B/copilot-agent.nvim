@@ -122,6 +122,14 @@ function M.statusline_model()
   return label
 end
 
+function M.statusline_provider()
+  local provider = cfg.active_provider()
+  if type(provider) == 'string' and provider ~= '' then
+    return provider
+  end
+  return 'copilot'
+end
+
 local function active_background_task_count()
   local count = 0
   for _, task in pairs(state.background_tasks or {}) do
@@ -566,7 +574,7 @@ function M.statusline_component()
         statusline_part('mode', M.statusline_mode),
         statusline_part('permission', M.statusline_permission),
         statusline_part('busy', M.statusline_busy),
-        statusline_part('model', M.statusline_model),
+        statusline_part('model', M.statusline_provider),
         statusline_part('tool', M.statusline_tool),
         statusline_part('intent', M.statusline_intent),
         statusline_part('context', M.statusline_context),
@@ -609,7 +617,7 @@ function M.refresh_input_statusline()
         statusline_part('mode', M.statusline_mode),
         statusline_part('permission', M.statusline_permission),
         statusline_part('busy', M.statusline_busy),
-        statusline_part('model', M.statusline_model),
+        statusline_part('model', M.statusline_provider),
         statusline_part('tool', M.statusline_tool),
         statusline_part('intent', M.statusline_intent),
         statusline_part('context', M.statusline_context),
@@ -652,7 +660,7 @@ function M.refresh_chat_statusline()
         statusline_part('busy', M.statusline_busy),
         statusline_part('session', M.statusline_session, width),
         statusline_part('permission', M.statusline_permission),
-        statusline_part('model', M.statusline_model),
+        statusline_part('model', M.statusline_provider),
         statusline_part('tool', M.statusline_tool),
         statusline_part('intent', M.statusline_intent),
         statusline_part('context', M.statusline_context),

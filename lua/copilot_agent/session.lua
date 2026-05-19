@@ -19,6 +19,9 @@ local state = cfg.state
 local notify = cfg.notify
 local log = cfg.log
 local active_provider = cfg.active_provider
+local provider_request_config = cfg.provider_request_config or function()
+  return nil
+end
 local provider_key = cfg.provider_key
   or function(provider)
     if type(provider) ~= 'string' then
@@ -30,19 +33,30 @@ local provider_key = cfg.provider_key
     end
     return provider
   end
-local session_provider = cfg.session_provider or function() return nil end
-local bind_session_provider = cfg.bind_session_provider
-local session_model_key = cfg.session_model_key or function(session_id)
-  if type(session_id) ~= 'string' or session_id == '' then
-    return nil
-  end
-  return session_id
+local session_provider = cfg.session_provider or function()
+  return nil
 end
+local bind_session_provider = cfg.bind_session_provider
+local session_model_key = cfg.session_model_key
+  or function(session_id, provider)
+    if type(session_id) ~= 'string' or session_id == '' then
+      return nil
+    end
+    provider = type(provider) == 'string' and vim.trim(provider):lower() or nil
+    if provider == '' then
+      provider = nil
+    end
+    if provider then
+      return provider .. '::' .. session_id
+    end
+    return session_id
+  end
 
 local request = http.request
 local sync_request = http.sync_request
 
 local working_directory = service.working_directory
+local supported_providers = { 'claude', 'copilot' }
 
 local refresh_statuslines = sl.refresh_statuslines
 
@@ -61,11 +75,57 @@ local unavailable_model_from_error = utils.unavailable_model_from_error
 
 local M = {}
 local create_session
-local PROVIDER_HANDOFF_MAX_ENTRIES = 8
-local PROVIDER_HANDOFF_MAX_CHARS = 240
 
 local function current_provider()
-  return type(active_provider) == 'function' and active_provider() or 'copilot'
+  if type(active_provider) == 'function' then
+    local provider = active_provider()
+    if type(provider) == 'string' and provider ~= '' then
+      return provider
+    end
+  end
+  return (type(cfg.default_provider) == 'function' and cfg.default_provider()) or 'copilot'
+end
+
+local function ordered_provider_choices(prefix)
+  local current = provider_key(current_provider())
+  local normalized_prefix = provider_key(prefix) or ''
+  local providers = {}
+  local seen = {}
+
+  local function add(provider)
+    local normalized = provider_key(provider)
+    if not normalized or seen[normalized] then
+      return
+    end
+    if normalized_prefix ~= '' and normalized:find(normalized_prefix, 1, true) ~= 1 then
+      return
+    end
+    seen[normalized] = true
+    providers[#providers + 1] = normalized
+  end
+
+  local current_index = nil
+  for idx, provider in ipairs(supported_providers) do
+    if provider == current then
+      current_index = idx
+      break
+    end
+  end
+
+  if current_index then
+    for idx = current_index + 1, #supported_providers do
+      add(supported_providers[idx])
+    end
+    for idx = 1, current_index do
+      add(supported_providers[idx])
+    end
+  else
+    for _, provider in ipairs(supported_providers) do
+      add(provider)
+    end
+  end
+
+  return providers
 end
 
 local function requested_model_for_session(session_id, provider, override)
@@ -77,6 +137,11 @@ local function requested_model_for_session(session_id, provider, override)
   local session_model = cfg.active_session_model(session_id, provider)
   if type(session_model) == 'string' and session_model ~= '' then
     return session_model
+  end
+
+  local provider_default = model.default_model_for_provider(provider)
+  if type(provider_default) == 'string' and provider_default ~= '' then
+    return provider_default
   end
 
   return nil
@@ -93,10 +158,6 @@ local function set_active_provider(provider)
   return current_provider()
 end
 
-local function session_provider_for(session_id, fallback_provider)
-  return type(session_provider) == 'function' and session_provider(session_id, fallback_provider) or current_provider()
-end
-
 local function remember_session_provider(session_id, provider)
   local resolved_provider = set_active_provider(provider)
   if type(bind_session_provider) == 'function' then
@@ -105,23 +166,8 @@ local function remember_session_provider(session_id, provider)
   return resolved_provider
 end
 
-local function cache_session_model(session_id, provider, model_name)
-  if type(session_id) ~= 'string' or session_id == '' then
-    return
-  end
-  if type(model_name) ~= 'string' or model_name == '' then
-    return
-  end
-  local key = session_model_key(session_id, session_provider_for(session_id, provider))
-  if key then
-    state.session_models[key] = model_name
-  end
-end
-
-local function with_provider_opts(opts, provider)
-  local next_opts = vim.tbl_extend('force', {}, opts or {})
-  next_opts.provider = provider or current_provider()
-  return next_opts
+local function known_providers()
+  return ordered_provider_choices()
 end
 
 local function formatted_session_summary(summary)
@@ -159,6 +205,32 @@ local function session_cwd_of(session)
     return nil
   end
   return (session.context and session.context.cwd) or session.workingDirectory or nil
+end
+
+local function session_provider_of(session, fallback_provider)
+  if not session then
+    return provider_key(fallback_provider)
+  end
+
+  local provider = provider_key(session.provider)
+  if provider then
+    return provider
+  end
+
+  local fallback = provider_key(fallback_provider)
+  if fallback == 'claude' then
+    return nil
+  end
+
+  local session_id = session_id_of(session)
+  if session_id then
+    local mapped = session_provider(session_id, fallback_provider)
+    if provider_key(mapped) then
+      return provider_key(mapped)
+    end
+  end
+
+  return fallback
 end
 
 local function session_sort_key(session)
@@ -260,10 +332,11 @@ local function fetch_sorted_sessions(context, callback, opts)
   end, { auto_start = false })
 end
 
-local function latest_matching_session(sessions, target_cwd)
+local function latest_matching_session(sessions, target_cwd, target_provider)
+  local normalized_provider = provider_key(target_provider)
   local matching = {}
   for _, session in ipairs(sessions or {}) do
-    if session_cwd_of(session) == target_cwd then
+    if session_cwd_of(session) == target_cwd and session_provider_of(session, normalized_provider) == normalized_provider then
       matching[#matching + 1] = session
     end
   end
@@ -432,6 +505,12 @@ end
 
 local function resume_known_session(session, callback, opts)
   opts = opts or {}
+  if type(opts.resume_opts) ~= 'table' then
+    opts.resume_opts = {}
+  end
+  if provider_key(opts.resume_opts.provider) == nil then
+    opts.resume_opts.provider = session_provider_of(session, current_provider())
+  end
   confirm_takeover_if_live(session, function(decision, message)
     if decision == 'new' then
       append_entry('system', 'Creating a new session instead of resuming ' .. format_session_id(session.sessionId))
@@ -459,20 +538,25 @@ function M.resume_session(session_id, callback, opts)
   local provider = set_active_provider(opts.provider)
   local requested_wd = working_directory()
   local requested_model = requested_model_for_session(session_id, provider, opts.model)
-  log(string.format('resume_session request id=%s provider=%s cwd=%s', format_session_id(session_id), tostring(provider), requested_wd), vim.log.levels.DEBUG)
+  log(
+    string.format('resume_session request id=%s provider=%s cwd=%s model=%s', format_session_id(session_id), tostring(provider), requested_wd, tostring(requested_model or '<default>')),
+    vim.log.levels.DEBUG
+  )
   local request_fn = opts.strict_discovery == true and request_with_managed_base_url or request
-  request_fn('POST', '/sessions', {
+  local request_body = vim.tbl_extend('force', {
     sessionId = session_id,
     resume = true,
     clientId = service.client_id(),
     clientName = state.config.client_name,
+    provider = provider,
     permissionMode = state.permission_mode or state.config.permission_mode,
     workingDirectory = requested_wd,
     streaming = state.config.session.streaming,
     enableConfigDiscovery = state.config.session.enable_config_discovery,
     model = requested_model,
     agent = state.config.session.agent,
-  }, function(response, err)
+  }, provider_request_config(provider, requested_model) or {})
+  request_fn('POST', '/sessions', request_body, function(response, err)
     state.startup_session_discovery = false
     state.creating_session = false
     if opts.guard_current_session_id and state.session_id ~= nil and state.session_id ~= opts.guard_current_session_id then
@@ -513,8 +597,12 @@ function M.resume_session(session_id, callback, opts)
     local resumed_session_id = response and response.sessionId or nil
     state.session_id = resumed_session_id
     state.session_working_directory = (response and response.workingDirectory) or requested_wd
+    remember_session_provider(resumed_session_id, provider)
     if type(response and response.model) == 'string' and response.model ~= '' and resumed_session_id then
-      state.session_models[resumed_session_id] = response.model
+      local key = session_model_key(resumed_session_id, provider)
+      if key then
+        state.session_models[key] = response.model
+      end
       state.current_model = response.model
     end
     state.pending_session_model = nil
@@ -548,7 +636,10 @@ function M.resume_session(session_id, callback, opts)
     )
     approvals.reset()
     if type(response and response.model) == 'string' and response.model ~= '' then
-      state.session_models[state.session_id] = response.model
+      local key = session_model_key(state.session_id, provider)
+      if key then
+        state.session_models[key] = response.model
+      end
       state.current_model = response.model
     end
     start_event_stream(state.session_id)
@@ -584,7 +675,7 @@ function M.latest_project_session_sync()
     return session_sort_key(a) > session_sort_key(b)
   end)
   log_session_catalog('latest_project_session_sync', sessions, wd)
-  return latest_matching_session(sessions, wd), nil
+  return latest_matching_session(sessions, wd, current_provider()), nil
 end
 
 local function reset_for_session_switch()
@@ -642,7 +733,7 @@ function M.attach_latest_project_session_or_create(callback)
       return
     end
 
-    local latest = latest_matching_session(sessions, wd)
+    local latest = latest_matching_session(sessions, wd, current_provider())
     if latest then
       disconnect_current_session_for_project_attach(function(disconnect_err)
         if disconnect_err then
@@ -719,10 +810,11 @@ function M.pick_or_create_session(callback)
     strict_startup_discovery = strict_startup_discovery and #sessions == 0
     state.startup_session_discovery = false
     log_session_catalog('pick_or_create_session', sessions, wd)
+    local target_provider = current_provider()
     local matching = {}
     for _, s in ipairs(sessions) do
       local s_cwd = session_cwd_of(s)
-      if s_cwd == wd then
+      if s_cwd == wd and session_provider_of(s, target_provider) == target_provider then
         table.insert(matching, s)
       end
     end
@@ -877,7 +969,8 @@ create_session = function(callback, opts)
   local requested_model = requested_model_for_session(opts.session_id, provider, opts.model)
   log(
     string.format(
-      'create_session request cwd=%s model=%s agent=%s permission=%s',
+      'create_session request provider=%s cwd=%s model=%s agent=%s permission=%s',
+      tostring(provider),
       requested_wd,
       tostring(requested_model or '<default>'),
       tostring(state.config.session.agent or '<default>'),
@@ -886,17 +979,19 @@ create_session = function(callback, opts)
     vim.log.levels.DEBUG
   )
   local request_fn = opts.strict_discovery == true and request_with_managed_base_url or request
-  request_fn('POST', '/sessions', {
+  local request_body = vim.tbl_extend('force', {
     sessionId = opts.session_id,
     clientId = service.client_id(),
     clientName = state.config.client_name,
+    provider = provider,
     permissionMode = state.permission_mode or state.config.permission_mode,
     workingDirectory = requested_wd,
     streaming = state.config.session.streaming,
     enableConfigDiscovery = state.config.session.enable_config_discovery,
     model = requested_model,
     agent = state.config.session.agent,
-  }, function(response, err)
+  }, provider_request_config(provider, requested_model) or {})
+  request_fn('POST', '/sessions', request_body, function(response, err)
     state.startup_session_discovery = false
     state.creating_session = false
     if err then
@@ -958,6 +1053,7 @@ create_session = function(callback, opts)
 
     state.session_id = response and response.sessionId or nil
     state.session_working_directory = (response and response.workingDirectory) or requested_wd
+    remember_session_provider(state.session_id, provider)
     if not state.session_id then
       local message = 'Server did not return a sessionId'
       append_entry('error', message)
@@ -1108,6 +1204,10 @@ function M.switch_to_session_id(target_session_id, target_session)
 
   local function perform_switch()
     local previous_session_id = state.session_id
+    local target_provider = session_provider_of(target_session, current_provider())
+    if not target_provider then
+      target_provider = session_provider(target_session_id, current_provider())
+    end
     state.session_id = nil
     state.session_name = nil
     state.session_working_directory = nil
@@ -1122,7 +1222,7 @@ function M.switch_to_session_id(target_session_id, target_session)
       end
       append_entry('system', 'Switching to session ' .. format_session_id(target_session_id) .. '…')
       log('switch_to_session_id switching to ' .. format_session_id(target_session_id), vim.log.levels.INFO)
-      M.resume_session(target_session_id)
+      M.resume_session(target_session_id, nil, { provider = target_provider })
     end)
   end
 
@@ -1219,6 +1319,145 @@ function M.switch_session()
       M.switch_to_session_id(picked.id, picked.session)
     end)
   end)
+end
+
+local function disconnect_current_session_for_provider_switch(callback)
+  local previous_session_id = state.session_id
+  if not previous_session_id then
+    callback(nil)
+    return
+  end
+
+  reset_for_session_switch()
+  M.disconnect_session(previous_session_id, false, function(disconnect_err)
+    if disconnect_err then
+      append_entry('error', 'Failed to disconnect previous session: ' .. disconnect_err)
+      log('switch_provider disconnect failed: ' .. tostring(disconnect_err), vim.log.levels.ERROR)
+      callback(disconnect_err)
+      return
+    end
+    callback(nil)
+  end)
+end
+
+local function select_provider_name(callback)
+  local providers = known_providers()
+  local default_provider = current_provider()
+  if #providers > 1 then
+    vim.ui.select(providers, { prompt = 'Switch provider' }, function(choice)
+      if type(choice) ~= 'string' or vim.trim(choice) == '' then
+        callback(nil)
+        return
+      end
+      callback(choice)
+    end)
+    return
+  end
+
+  vim.ui.input({ prompt = 'Switch provider', default = default_provider }, function(choice)
+    if type(choice) ~= 'string' or vim.trim(choice) == '' then
+      callback(nil)
+      return
+    end
+    callback(choice)
+  end)
+end
+
+function M.complete_provider(arglead)
+  return ordered_provider_choices(arglead)
+end
+
+--- Returns the currently active provider name (e.g. "claude", "copilot").
+function M.get_provider()
+  return current_provider()
+end
+
+function M.switch_provider(provider)
+  local function start(provider_name)
+    provider_name = provider_key(provider_name)
+    if not provider_name then
+      notify('Provider name is required', vim.log.levels.WARN)
+      return
+    end
+    set_active_provider(provider_name)
+
+    local function create_for_provider()
+      create_session(function(session_id, err)
+        if err then
+          if type(err) == 'string' then
+            notify('Failed to create session for provider ' .. provider_name .. ': ' .. err, vim.log.levels.ERROR)
+          end
+          return
+        end
+        append_entry('system', 'Created session ' .. tostring(session_id) .. ' for provider ' .. provider_name)
+      end, { provider = provider_name })
+    end
+
+    disconnect_current_session_for_provider_switch(function(disconnect_err)
+      if disconnect_err then
+        return
+      end
+
+      fetch_sorted_sessions('switch_provider', function(sessions, err)
+        if err then
+          log('switch_provider list failed: ' .. tostring(err), vim.log.levels.WARN)
+          create_for_provider()
+          return
+        end
+
+        local matching = {}
+        for _, session in ipairs(sessions or {}) do
+          local session_provider_name = provider_key((state.provider_sessions or {})[session.sessionId])
+          if session_provider_name == provider_name then
+            table.insert(matching, session)
+          end
+        end
+
+        if #matching == 0 then
+          create_for_provider()
+          return
+        end
+
+        table.sort(matching, function(a, b)
+          return session_sort_key(a) > session_sort_key(b)
+        end)
+
+        local choices = {}
+        for _, session in ipairs(matching) do
+          local label = formatted_session_label(session.summary, session.sessionId)
+          local cwd_label = session_cwd_of(session)
+          if cwd_label then
+            label = label .. '  ' .. vim.fn.fnamemodify(cwd_label, ':~')
+          end
+          table.insert(choices, { label = label, id = session.sessionId, session = session })
+        end
+        table.insert(choices, { label = '+ New session', id = nil })
+
+        local display = vim.tbl_map(function(choice)
+          return choice.label
+        end, choices)
+
+        vim.ui.select(display, { prompt = 'Switch provider: ' .. provider_name }, function(_, idx)
+          if not idx then
+            return
+          end
+          local picked = choices[idx]
+          if not picked.id then
+            create_for_provider()
+            return
+          end
+          M.switch_to_session_id(picked.id, picked.session)
+        end)
+      end)
+    end)
+  end
+
+  if type(provider) == 'string' and vim.trim(provider) ~= '' then
+    start(provider)
+    return
+  end
+
+  select_provider_name(start)
 end
 
 local function delete_session_label(session)

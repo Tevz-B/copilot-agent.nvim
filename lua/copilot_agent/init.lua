@@ -192,6 +192,8 @@ function M.setup(opts)
   state.reasoning_lines = {}
   state.last_assistant_usage = nil
   state.current_model = nil
+  state.model_cache = {}
+  state.model_cache_provider = nil
   state.pending_session_model = nil
   state.active_provider = nil
   state.provider_cache = {}
@@ -401,6 +403,14 @@ function M.switch_session()
   session.switch_session()
 end
 
+function M.switch_provider(provider)
+  session.switch_provider(provider)
+end
+
+function M.complete_provider(arglead)
+  return session.complete_provider(arglead)
+end
+
 function M.delete_session()
   session.delete_session()
 end
@@ -583,6 +593,7 @@ end
 --
 M.statusline_mode = sl.statusline_mode
 M.statusline_model = sl.statusline_model
+M.statusline_provider = sl.statusline_provider
 M.statusline_busy = sl.statusline_busy
 M.statusline_attachments = sl.statusline_attachments
 M.statusline_permission = sl.statusline_permission

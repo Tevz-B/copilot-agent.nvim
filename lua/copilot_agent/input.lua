@@ -1480,15 +1480,7 @@ local function discovered_model_ids()
   if not ok then
     return {}
   end
-
-  if vim.tbl_isempty(state.model_cache) then
-    local response = http.sync_request('GET', '/models', nil)
-    if type(response) == 'table' then
-      model.store_model_cache(response.models or {})
-    end
-  end
-
-  return model.model_completion_items('')
+  return model.complete_model('')
 end
 
 local function discovered_session_items()

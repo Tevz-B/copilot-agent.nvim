@@ -16,6 +16,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -70,12 +71,31 @@ func fatalErrorf(format string, args ...any) {
 	log.Fatalf("[ERROR] "+format, args...)
 }
 
+// logDebugf logs at DEBUG level when the COPILOT_DEBUG environment variable is set to "1" or "true".
+func logDebugf(format string, args ...any) {
+	if v := os.Getenv("COPILOT_DEBUG"); v == "1" || v == "true" {
+		log.Printf("[DEBUG] "+format, args...)
+	}
+}
+
+// maskSecret returns the first 4 chars of a secret followed by "****", or "****" if too short.
+func maskSecret(s string) string {
+	if len(s) <= 4 {
+		return "****"
+	}
+	return s[:4] + "****"
+}
+
 type createSessionRequest struct {
 	SessionID                      string                       `json:"sessionId,omitempty"`
 	Resume                         bool                         `json:"resume,omitempty"`
 	ClientID                       string                       `json:"clientId,omitempty"`
 	ClientName                     string                       `json:"clientName,omitempty"`
 	Model                          string                       `json:"model,omitempty"`
+	Provider                       string                       `json:"provider,omitempty"`
+	ProviderBaseURL                string                       `json:"providerBaseUrl,omitempty"`
+	ProviderAPIKey                 string                       `json:"providerApiKey,omitempty"`
+	ProviderBearerToken            string                       `json:"providerBearerToken,omitempty"`
 	ReasoningEffort                string                       `json:"reasoningEffort,omitempty"`
 	WorkingDirectory               string                       `json:"workingDirectory,omitempty"`
 	Streaming                      *bool                        `json:"streaming,omitempty"`
@@ -133,6 +153,13 @@ type setModelRequest struct {
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 }
 
+type listModelsRequest struct {
+	Provider            string `json:"provider,omitempty"`
+	ProviderBaseURL     string `json:"providerBaseUrl,omitempty"`
+	ProviderAPIKey      string `json:"providerApiKey,omitempty"`
+	ProviderBearerToken string `json:"providerBearerToken,omitempty"`
+}
+
 type answerUserInputRequest struct {
 	Answer      string `json:"answer"`
 	WasFreeform bool   `json:"wasFreeform,omitempty"`
@@ -141,6 +168,7 @@ type answerUserInputRequest struct {
 type sessionSummary struct {
 	SessionID         string                      `json:"sessionId"`
 	Model             string                      `json:"model,omitempty"`
+	Provider          string                      `json:"provider,omitempty"`
 	AgentMode         string                      `json:"agentMode,omitempty"`
 	WorkingDirectory  string                      `json:"workingDirectory,omitempty"`
 	WorkspacePath     string                      `json:"workspacePath,omitempty"`
@@ -237,6 +265,7 @@ type sseMessage struct {
 type managedSession struct {
 	session              *copilot.Session
 	model                string
+	provider             string
 	agentMode            string // "interactive", "plan", or "autopilot"
 	workingDirectory     string
 	permissionMode       string
@@ -311,6 +340,83 @@ type registeredClient struct {
 	ClientName   string
 	RegisteredAt time.Time
 	LastSeen     time.Time
+}
+
+func normalizeProviderName(provider string) string {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	switch provider {
+	case "claude", "copilot":
+		return provider
+	default:
+		return ""
+	}
+}
+
+func inferredProviderName(provider, model string) string {
+	if normalized := normalizeProviderName(provider); normalized != "" {
+		return normalized
+	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "claude") {
+		return "claude"
+	}
+	return "copilot"
+}
+
+type sessionProviderOverrides struct {
+	BaseURL     string
+	APIKey      string
+	BearerToken string
+}
+
+func providerConfigForSession(provider string, overrides sessionProviderOverrides) (*copilot.ProviderConfig, string, error) {
+	normalized := inferredProviderName(provider, "")
+	switch normalized {
+	case "copilot":
+		return nil, normalized, nil
+	case "claude":
+		baseURL := strings.TrimSpace(overrides.BaseURL)
+		if baseURL == "" {
+			baseURL = strings.TrimSpace(os.Getenv("ANTHROPIC_BASE_URL"))
+		}
+		if baseURL == "" {
+			baseURL = "https://api.anthropic.com"
+		}
+		apiKey := strings.TrimSpace(overrides.APIKey)
+		if apiKey == "" {
+			apiKey = strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY"))
+		}
+		bearerToken := strings.TrimSpace(overrides.BearerToken)
+		if bearerToken == "" {
+			bearerToken = strings.TrimSpace(os.Getenv("ANTHROPIC_BEARER_TOKEN"))
+		}
+		if apiKey == "" && bearerToken == "" {
+			return nil, normalized, errors.New("ANTHROPIC_API_KEY or ANTHROPIC_BEARER_TOKEN is required for claude provider")
+		}
+		providerConfig := &copilot.ProviderConfig{
+			Type:        "anthropic",
+			BaseURL:     baseURL,
+			APIKey:      apiKey,
+			BearerToken: bearerToken,
+		}
+		logInfof(
+			"resolved provider=%s type=%s base_url=%s api_key_set=%t bearer_token_set=%t",
+			normalized,
+			providerConfig.Type,
+			providerConfig.BaseURL,
+			providerConfig.APIKey != "",
+			providerConfig.BearerToken != "",
+		)
+		logDebugf(
+			"claude provider SDK input: type=%s base_url=%s api_key=%q bearer_token_set=%t",
+			providerConfig.Type,
+			providerConfig.BaseURL,
+			maskSecret(providerConfig.APIKey),
+			providerConfig.BearerToken != "",
+		)
+		return providerConfig, normalized, nil
+	default:
+		return nil, normalized, fmt.Errorf("unsupported provider %q", provider)
+	}
 }
 
 func (s *service) detachedIdleGrace() time.Duration {
@@ -488,6 +594,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", svc.handleHealth)
 	mux.HandleFunc("GET /models", svc.handleListModels)
+	mux.HandleFunc("POST /models", svc.handleListModels)
 	mux.HandleFunc("GET /sessions", svc.handleListSessions)
 	mux.HandleFunc("POST /sessions", svc.handleCreateSession)
 	mux.HandleFunc("GET /sessions/{id}", svc.handleGetSession)
@@ -936,8 +1043,17 @@ func listenInRange(host, portRange string) (net.Listener, error) {
 }
 
 func (s *service) handleListModels(w http.ResponseWriter, r *http.Request) {
-	models, err := withCopilotClientRetry(s, "list models", func(client copilotClient) ([]copilot.ModelInfo, error) {
-		return client.ListModels(r.Context())
+	req, err := decodeListModelsRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	provider := inferredProviderName(req.Provider, "")
+	models, err := s.listModelsForProvider(r.Context(), provider, sessionProviderOverrides{
+		BaseURL:     req.ProviderBaseURL,
+		APIKey:      req.ProviderAPIKey,
+		BearerToken: req.ProviderBearerToken,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, fmt.Sprintf("list models: %v", err))
@@ -1019,14 +1135,27 @@ func (s *service) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	streaming := boolOrDefault(req.Streaming, true)
 	configDiscovery := boolOrDefault(req.EnableConfigDiscovery, true)
 
-	model, err := s.resolveRequestedModel(r.Context(), firstNonEmpty(req.Model, s.defaultModel))
+	providerOverrides := sessionProviderOverrides{
+		BaseURL:     req.ProviderBaseURL,
+		APIKey:      req.ProviderAPIKey,
+		BearerToken: req.ProviderBearerToken,
+	}
+	providerName := inferredProviderName(req.Provider, firstNonEmpty(req.Model, s.defaultModel))
+	model, err := s.resolveRequestedModel(r.Context(), firstNonEmpty(req.Model, s.defaultModel), providerName, providerOverrides)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, fmt.Sprintf("resolve model: %v", err))
+		return
+	}
+	providerName = inferredProviderName(req.Provider, model)
+	providerConfig, providerName, err := providerConfigForSession(providerName, providerOverrides)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("provider config: %v", err))
 		return
 	}
 
 	managed := &managedSession{
 		model:               model,
+		provider:            providerName,
 		workingDirectory:    workingDirectory,
 		permissionMode:      req.PermissionMode,
 		excludedTools:       req.ExcludedTools,
@@ -1059,9 +1188,12 @@ func (s *service) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	var session *copilot.Session
 	if req.Resume {
 		session, err = withCopilotClientRetry(s, "resume session", func(client copilotClient) (*copilot.Session, error) {
-			return client.ResumeSession(r.Context(), req.SessionID, &copilot.ResumeSessionConfig{
+			logDebugf("claude SDK input ResumeSession: session_id=%s model=%s provider=%+v wd=%s streaming=%t",
+				req.SessionID, managed.model, providerConfig, workingDirectory, streaming)
+			sess, e := client.ResumeSession(r.Context(), req.SessionID, &copilot.ResumeSessionConfig{
 				ClientName:                     clientName,
 				Model:                          managed.model,
+				Provider:                       providerConfig,
 				ReasoningEffort:                req.ReasoningEffort,
 				SystemMessage:                  req.SystemMessage,
 				AvailableTools:                 req.AvailableTools,
@@ -1077,6 +1209,8 @@ func (s *service) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 				SkillDirectories:               req.SkillDirectories,
 				DisabledSkills:                 req.DisabledSkills,
 			})
+			logDebugf("claude SDK output ResumeSession: session_id=%s err=%v", req.SessionID, e)
+			return sess, e
 		})
 		if err != nil {
 			logErrorf("resume session session_id=%s wd=%s: %v", req.SessionID, workingDirectory, err)
@@ -1087,10 +1221,13 @@ func (s *service) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		managed.eventUnsubscribe = session.On(managed.handleSessionEvent)
 	} else {
 		session, err = withCopilotClientRetry(s, "create session", func(client copilotClient) (*copilot.Session, error) {
-			return client.CreateSession(r.Context(), &copilot.SessionConfig{
+			logDebugf("claude SDK input CreateSession: session_id=%s model=%s provider=%+v wd=%s streaming=%t",
+				req.SessionID, managed.model, providerConfig, workingDirectory, streaming)
+			sess, e := client.CreateSession(r.Context(), &copilot.SessionConfig{
 				SessionID:                      req.SessionID,
 				ClientName:                     clientName,
 				Model:                          managed.model,
+				Provider:                       providerConfig,
 				ReasoningEffort:                req.ReasoningEffort,
 				SystemMessage:                  req.SystemMessage,
 				AvailableTools:                 req.AvailableTools,
@@ -1107,6 +1244,8 @@ func (s *service) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 				DisabledSkills:                 req.DisabledSkills,
 				OnEvent:                        managed.handleSessionEvent,
 			})
+			logDebugf("claude SDK output CreateSession: session_id=%s err=%v", req.SessionID, e)
+			return sess, e
 		})
 		if err != nil {
 			logErrorf("create session session_id=%s wd=%s: %v", req.SessionID, workingDirectory, err)
@@ -1121,7 +1260,7 @@ func (s *service) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	if req.Resume {
 		action = "resumed"
 	}
-	logInfof("session %s %s wd=%s model=%s mode=%s streaming=%t", req.SessionID, action, workingDirectory, managed.model, req.PermissionMode, streaming)
+	logInfof("session %s %s provider=%s wd=%s model=%s mode=%s streaming=%t", req.SessionID, action, managed.provider, workingDirectory, managed.model, req.PermissionMode, streaming)
 	writeJSON(w, http.StatusCreated, managed.summary())
 }
 
@@ -1232,7 +1371,7 @@ func (s *service) handleSetModel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	model := strings.TrimSpace(req.Model)
-	model, err := s.resolveRequestedModel(r.Context(), model)
+	model, err := s.resolveRequestedModel(r.Context(), model, managed.provider, sessionProviderOverrides{})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, fmt.Sprintf("resolve model: %v", err))
 		return
@@ -1324,6 +1463,8 @@ func (s *service) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		s.registerClient(clientID, managed.clientName)
 	}
 
+	logDebugf("claude SDK input Send: session_id=%s provider=%s prompt_chars=%d attachments=%d",
+		managed.session.SessionID, managed.provider, len(req.Prompt), len(req.Attachments))
 	messageID, err := managed.session.Send(r.Context(), copilot.MessageOptions{
 		Prompt:         req.Prompt,
 		Attachments:    req.Attachments,
@@ -1334,8 +1475,9 @@ func (s *service) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, fmt.Sprintf("send message: %v", err))
 		return
 	}
+	logDebugf("claude SDK output Send: session_id=%s message_id=%s", managed.session.SessionID, messageID)
 
-	logInfof("send message session=%s prompt_chars=%d attachments=%d message_id=%s", managed.session.SessionID, len(req.Prompt), len(req.Attachments), messageID)
+	logInfof("send message session=%s provider=%s prompt_chars=%d attachments=%d message_id=%s", managed.session.SessionID, managed.provider, len(req.Prompt), len(req.Attachments), messageID)
 	writeJSON(w, http.StatusAccepted, map[string]any{"sessionId": managed.session.SessionID, "messageId": messageID})
 }
 
@@ -1878,15 +2020,13 @@ func (s *service) resolveSessionWorkingDirectory(value string) (string, error) {
 	return resolveWorkingDirectory(value)
 }
 
-func (s *service) resolveRequestedModel(ctx context.Context, requested string) (string, error) {
+func (s *service) resolveRequestedModel(ctx context.Context, requested, provider string, overrides sessionProviderOverrides) (string, error) {
 	requested = strings.TrimSpace(requested)
 	if requested == "" {
 		return "", nil
 	}
 
-	models, err := withCopilotClientRetry(s, "list models", func(client copilotClient) ([]copilot.ModelInfo, error) {
-		return client.ListModels(ctx)
-	})
+	models, err := s.listModelsForProvider(ctx, provider, overrides)
 	if err != nil {
 		return "", err
 	}
@@ -1895,6 +2035,164 @@ func (s *service) resolveRequestedModel(ctx context.Context, requested string) (
 		return resolved, nil
 	}
 	return requested, nil
+}
+
+func decodeListModelsRequest(r *http.Request) (listModelsRequest, error) {
+	var req listModelsRequest
+	switch r.Method {
+	case http.MethodGet:
+		query := r.URL.Query()
+		req.Provider = query.Get("provider")
+		req.ProviderBaseURL = query.Get("providerBaseUrl")
+		req.ProviderAPIKey = query.Get("providerApiKey")
+		req.ProviderBearerToken = query.Get("providerBearerToken")
+	case http.MethodPost:
+		if err := decodeJSON(r, &req); err != nil {
+			return listModelsRequest{}, err
+		}
+	default:
+		return listModelsRequest{}, fmt.Errorf("unsupported method %s", r.Method)
+	}
+	return req, nil
+}
+
+func (s *service) listModelsForProvider(ctx context.Context, provider string, overrides sessionProviderOverrides) ([]copilot.ModelInfo, error) {
+	switch inferredProviderName(provider, "") {
+	case "claude":
+		providerConfig, _, err := providerConfigForSession("claude", overrides)
+		if err != nil {
+			return nil, err
+		}
+		return listAnthropicModels(ctx, providerConfig)
+	default:
+		return withCopilotClientRetry(s, "list models", func(client copilotClient) ([]copilot.ModelInfo, error) {
+			return client.ListModels(ctx)
+		})
+	}
+}
+
+type anthropicModelsEnvelope struct {
+	Data   []anthropicModelEntry `json:"data"`
+	Models []anthropicModelEntry `json:"models"`
+}
+
+type anthropicModelEntry struct {
+	ID          string `json:"id"`
+	Name        string `json:"name,omitempty"`
+	DisplayName string `json:"display_name,omitempty"`
+	Type        string `json:"type,omitempty"`
+}
+
+func listAnthropicModels(ctx context.Context, providerConfig *copilot.ProviderConfig) ([]copilot.ModelInfo, error) {
+	if providerConfig == nil {
+		return nil, errors.New("anthropic provider config is required")
+	}
+	endpoint, err := anthropicModelsURL(providerConfig.BaseURL)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("anthropic-version", "2023-06-01")
+	if providerConfig.BearerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+providerConfig.BearerToken)
+	} else if providerConfig.APIKey != "" {
+		req.Header.Set("x-api-key", providerConfig.APIKey)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		message := strings.TrimSpace(string(body))
+		if message == "" {
+			message = resp.Status
+		}
+		return nil, fmt.Errorf("provider returned %s: %s", resp.Status, message)
+	}
+
+	models, err := decodeAnthropicModels(body)
+	if err != nil {
+		return nil, err
+	}
+	return models, nil
+}
+
+func anthropicModelsURL(baseURL string) (string, error) {
+	trimmed := strings.TrimSpace(baseURL)
+	if trimmed == "" {
+		return "", errors.New("provider base URL is required")
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return "", fmt.Errorf("parse provider base URL: %w", err)
+	}
+	path := strings.TrimRight(parsed.Path, "/")
+	lowerPath := strings.ToLower(path)
+	if strings.HasSuffix(lowerPath, "/v1/models") {
+		parsed.Path = path
+	} else if strings.HasSuffix(lowerPath, "/v1") {
+		parsed.Path = path + "/models"
+	} else {
+		parsed.Path = path + "/v1/models"
+	}
+	if parsed.Path == "" {
+		parsed.Path = "/v1/models"
+	}
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.String(), nil
+}
+
+func decodeAnthropicModels(body []byte) ([]copilot.ModelInfo, error) {
+	var envelope anthropicModelsEnvelope
+	if err := json.Unmarshal(body, &envelope); err == nil {
+		entries := envelope.Data
+		if len(entries) == 0 {
+			entries = envelope.Models
+		}
+		if len(entries) > 0 {
+			return anthropicModelInfos(entries), nil
+		}
+	}
+
+	var entries []anthropicModelEntry
+	if err := json.Unmarshal(body, &entries); err == nil && len(entries) > 0 {
+		return anthropicModelInfos(entries), nil
+	}
+
+	return nil, fmt.Errorf("decode provider models response: unsupported payload %s", strings.TrimSpace(string(body)))
+}
+
+func anthropicModelInfos(entries []anthropicModelEntry) []copilot.ModelInfo {
+	models := make([]copilot.ModelInfo, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		id := strings.TrimSpace(entry.ID)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		models = append(models, copilot.ModelInfo{
+			ID:   id,
+			Name: firstNonEmpty(strings.TrimSpace(entry.DisplayName), strings.TrimSpace(entry.Name), id),
+		})
+	}
+	return models
 }
 
 func (s *service) getManagedSession(id string) (*managedSession, bool) {
@@ -2431,6 +2729,7 @@ func (m *managedSession) summary() sessionSummary {
 	return sessionSummary{
 		SessionID:         sessionID,
 		Model:             m.model,
+		Provider:          m.provider,
 		AgentMode:         m.agentMode,
 		WorkingDirectory:  m.workingDirectory,
 		WorkspacePath:     workspacePath,

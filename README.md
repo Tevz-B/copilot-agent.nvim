@@ -211,6 +211,7 @@ For most users, this minimal setup is enough:
       -- port from stderr automatically. No manual base_url needed.
       base_url = "http://127.0.0.1:8088",  -- only for externally-started services
       client_name = "nvim-copilot",
+      default_provider = "copilot", -- or "claude"; Claude/LiteLLM uses ANTHROPIC_* from Neovim (or service.env) on session create/resume
       permission_mode = "approve-all",  -- "interactive" | "approve-all" | "autopilot" | "reject-all"
       auto_create_session = true,
       lsp = {
@@ -383,6 +384,7 @@ Use `:CopilotAgentDashboard` or `:CopilotAgentChat` to get started.
 | `:CopilotAgentSendBuffer`            | Send the active compose buffer                                                                                                 |
 | `:CopilotAgentNewSession`            | Disconnect current session and start a fresh one                                                                               |
 | `:CopilotAgentSwitchSession`         | Pick from all persisted sessions and switch                                                                                    |
+| `:CopilotAgentProvider [name]`       | Switch provider; reuse a matching session or create a new one                                                                  |
 | `:CopilotAgentDeleteSession`         | Pick a session by summary + exact ID and delete it                                                                             |
 | `:CopilotAgentModel [id]`            | Pick or set a model; tab-completes from service model list                                                                     |
 | `:CopilotAgentStart`                 | Start the Go service with the current config                                                                                   |
@@ -413,6 +415,7 @@ Open with `:CopilotAgentChat`, then press `i` or `<Enter>` in the chat buffer.
 | `q` / `<Esc>`                     | Close input (normal mode)                                                                               |
 | `<C-t>`                           | Cycle chat mode: **💬 ask → 📋 plan → 🤖 agent → 🚀 autopilot**                                         |
 | `<M-m>`                           | Open model picker                                                                                       |
+| `<M-P>`                           | Switch provider                                                                                         |
 | `<M-a>`                           | Cycle permission mode: **🔐 interactive → 📂 approve-reads → ✅ approve-all → 🤖 autopilot**            |
 | `<C-a>`                           | Attach resource — opens picker menu (see below)                                                         |
 | `<M-v>`                           | Paste image from clipboard as attachment                                                                |

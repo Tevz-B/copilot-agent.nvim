@@ -38,8 +38,10 @@ type fakeCopilotClient struct {
 	getSessionMetadataErr   error
 	createSessionResp       *copilot.Session
 	createSessionErr        error
+	createSessionConfig     *copilot.SessionConfig
 	resumeSessionResp       *copilot.Session
 	resumeSessionErr        error
+	resumeSessionConfig     *copilot.ResumeSessionConfig
 	deleteSessionErr        error
 	startCalls              int
 	stopCalls               int
@@ -93,13 +95,15 @@ func (f *fakeCopilotClient) GetSessionMetadata(context.Context, string) (*copilo
 	return f.getSessionMetadataResp, f.getSessionMetadataErr
 }
 
-func (f *fakeCopilotClient) CreateSession(context.Context, *copilot.SessionConfig) (*copilot.Session, error) {
+func (f *fakeCopilotClient) CreateSession(_ context.Context, config *copilot.SessionConfig) (*copilot.Session, error) {
 	f.createSessionCalls++
+	f.createSessionConfig = config
 	return f.createSessionResp, f.createSessionErr
 }
 
-func (f *fakeCopilotClient) ResumeSession(context.Context, string, *copilot.ResumeSessionConfig) (*copilot.Session, error) {
+func (f *fakeCopilotClient) ResumeSession(_ context.Context, _ string, config *copilot.ResumeSessionConfig) (*copilot.Session, error) {
 	f.resumeSessionCalls++
+	f.resumeSessionConfig = config
 	return f.resumeSessionResp, f.resumeSessionErr
 }
 
@@ -1210,5 +1214,197 @@ func TestHandleCreateSessionRestartsDeadClientAndRetries(t *testing.T) {
 	}
 	if _, ok := svc.getManagedSession("session-123"); !ok {
 		t.Fatal("expected retried session to be stored after recovery")
+	}
+}
+
+func TestHandleCreateSessionForwardsClaudeProvider(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+	t.Setenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+	workingDir := t.TempDir()
+	client := &fakeCopilotClient{
+		state:             copilot.StateConnected,
+		createSessionResp: &copilot.Session{SessionID: "session-123"},
+	}
+	svc := &service{
+		client:    client,
+		clientCtx: context.Background(),
+		sessions:  make(map[string]*managedSession),
+	}
+
+	body := fmt.Sprintf(`{"workingDirectory":%q,"enableConfigDiscovery":false,"provider":"claude"}`, workingDir)
+	req := httptest.NewRequest(http.MethodPost, "/sessions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	svc.handleCreateSession(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", w.Code, w.Body.String())
+	}
+	if client.createSessionConfig == nil || client.createSessionConfig.Provider == nil {
+		t.Fatalf("expected provider config to be forwarded, got %+v", client.createSessionConfig)
+	}
+	if got := client.createSessionConfig.Provider.Type; got != "anthropic" {
+		t.Fatalf("expected anthropic provider, got %q", got)
+	}
+	if got := client.createSessionConfig.Provider.BaseURL; got != "https://api.anthropic.com" {
+		t.Fatalf("expected Anthropic base URL, got %q", got)
+	}
+	if got := client.createSessionConfig.Provider.APIKey; got != "test-key" {
+		t.Fatalf("expected Anthropic API key to be forwarded, got %q", got)
+	}
+
+	var summary sessionSummary
+	if err := json.NewDecoder(w.Body).Decode(&summary); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if summary.Provider != "claude" {
+		t.Fatalf("expected response provider claude, got %q", summary.Provider)
+	}
+}
+
+func TestHandleResumeSessionForwardsClaudeProvider(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+	t.Setenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+	workingDir := t.TempDir()
+	client := &fakeCopilotClient{
+		state:             copilot.StateConnected,
+		resumeSessionResp: &copilot.Session{SessionID: "session-123"},
+	}
+	svc := &service{
+		client:    client,
+		clientCtx: context.Background(),
+		sessions:  make(map[string]*managedSession),
+	}
+
+	body := fmt.Sprintf(`{"sessionId":"session-123","resume":true,"workingDirectory":%q,"provider":"claude"}`, workingDir)
+	req := httptest.NewRequest(http.MethodPost, "/sessions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	svc.handleCreateSession(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", w.Code, w.Body.String())
+	}
+	if client.resumeSessionConfig == nil || client.resumeSessionConfig.Provider == nil {
+		t.Fatalf("expected resume provider config to be forwarded, got %+v", client.resumeSessionConfig)
+	}
+	if got := client.resumeSessionConfig.Provider.Type; got != "anthropic" {
+		t.Fatalf("expected anthropic provider, got %q", got)
+	}
+	if got := client.resumeSessionConfig.Provider.BaseURL; got != "https://api.anthropic.com" {
+		t.Fatalf("expected Anthropic base URL, got %q", got)
+	}
+	if got := client.resumeSessionConfig.Provider.APIKey; got != "test-key" {
+		t.Fatalf("expected Anthropic API key to be forwarded, got %q", got)
+	}
+
+	var summary sessionSummary
+	if err := json.NewDecoder(w.Body).Decode(&summary); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if summary.Provider != "claude" {
+		t.Fatalf("expected response provider claude, got %q", summary.Provider)
+	}
+}
+
+func TestHandleCreateSessionForwardsClaudeProviderFromRequest(t *testing.T) {
+	workingDir := t.TempDir()
+	client := &fakeCopilotClient{
+		state:             copilot.StateConnected,
+		createSessionResp: &copilot.Session{SessionID: "session-123"},
+	}
+	svc := &service{
+		client:    client,
+		clientCtx: context.Background(),
+		sessions:  make(map[string]*managedSession),
+	}
+
+	body := fmt.Sprintf(`{"workingDirectory":%q,"enableConfigDiscovery":false,"provider":"claude","providerBaseUrl":"https://litellm.example/v1","providerApiKey":"proxy-key"}`, workingDir)
+	req := httptest.NewRequest(http.MethodPost, "/sessions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	svc.handleCreateSession(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", w.Code, w.Body.String())
+	}
+	if client.createSessionConfig == nil || client.createSessionConfig.Provider == nil {
+		t.Fatalf("expected provider config to be forwarded, got %+v", client.createSessionConfig)
+	}
+	if got := client.createSessionConfig.Provider.Type; got != "anthropic" {
+		t.Fatalf("expected anthropic provider, got %q", got)
+	}
+	if got := client.createSessionConfig.Provider.BaseURL; got != "https://litellm.example/v1" {
+		t.Fatalf("expected request base URL, got %q", got)
+	}
+	if got := client.createSessionConfig.Provider.APIKey; got != "proxy-key" {
+		t.Fatalf("expected request API key to be forwarded, got %q", got)
+	}
+}
+
+func TestHandleListModelsUsesCopilotClientByDefault(t *testing.T) {
+	t.Parallel()
+
+	client := &fakeCopilotClient{
+		state: copilot.StateConnected,
+		listModelsResp: []copilot.ModelInfo{
+			{ID: "gpt-5.4", Name: "GPT-5.4"},
+		},
+	}
+	svc := &service{client: client}
+	req := httptest.NewRequest(http.MethodGet, "/models", nil)
+	w := httptest.NewRecorder()
+
+	svc.handleListModels(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if client.listModelsCalls != 1 {
+		t.Fatalf("expected ListModels to be called once, got %d", client.listModelsCalls)
+	}
+	if !strings.Contains(w.Body.String(), "gpt-5.4") {
+		t.Fatalf("expected Copilot model in response, got %s", w.Body.String())
+	}
+}
+
+func TestHandleListModelsUsesClaudeProviderCatalog(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			t.Fatalf("expected /v1/models, got %s", r.URL.Path)
+		}
+		if got := r.Header.Get("x-api-key"); got != "proxy-key" {
+			t.Fatalf("expected x-api-key header, got %q", got)
+		}
+		if got := r.Header.Get("anthropic-version"); got != "2023-06-01" {
+			t.Fatalf("expected anthropic-version header, got %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"claude-3-5-haiku","display_name":"Claude 3.5 Haiku"},{"id":"claude-3-7-sonnet","display_name":"Claude 3.7 Sonnet"}]}`))
+	}))
+	defer server.Close()
+
+	client := &fakeCopilotClient{state: copilot.StateConnected}
+	svc := &service{client: client}
+	body := fmt.Sprintf(`{"provider":"claude","providerBaseUrl":%q,"providerApiKey":"proxy-key"}`, server.URL)
+	req := httptest.NewRequest(http.MethodPost, "/models", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	svc.handleListModels(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if client.listModelsCalls != 0 {
+		t.Fatalf("expected Copilot ListModels to be skipped, got %d calls", client.listModelsCalls)
+	}
+	if !strings.Contains(w.Body.String(), "claude-3-7-sonnet") {
+		t.Fatalf("expected provider model IDs in response, got %s", w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "gpt-5.4") {
+		t.Fatalf("expected response to exclude Copilot models, got %s", w.Body.String())
 	}
 }

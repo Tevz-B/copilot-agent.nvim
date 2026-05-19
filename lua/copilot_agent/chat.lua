@@ -70,6 +70,7 @@ local function help_lines()
     '',
     '  Model / permissions',
     '    <M-m>           Open model picker',
+    '    <M-P>           Switch provider',
     '    <M-a>           Cycle permission mode',
     '    <C-x>           Toggle session tools',
     '',
@@ -1023,6 +1024,10 @@ function M.setup_action_keymaps(bufnr)
   vim.keymap.set({ 'n', 'i' }, '<M-m>', function()
     require('copilot_agent').select_model()
   end, { buffer = bufnr, silent = true, desc = 'Switch Copilot model' })
+
+  vim.keymap.set({ 'n', 'i' }, '<M-P>', function()
+    require('copilot_agent').switch_provider()
+  end, { buffer = bufnr, silent = true, desc = 'Switch Copilot provider' })
 
   -- Paste image from clipboard.
   vim.keymap.set({ 'n', 'i' }, '<M-v>', function()

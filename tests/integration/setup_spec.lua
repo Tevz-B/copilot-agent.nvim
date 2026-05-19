@@ -1446,6 +1446,69 @@ describe('compaction activity events', function()
   end)
 end)
 
+describe('provider completion', function()
+  local agent
+
+  before_each(function()
+    package.loaded['copilot_agent'] = nil
+    agent = require('copilot_agent')
+    agent.setup({ auto_create_session = false, notify = false })
+  end)
+
+  it('returns the next provider first and filters by prefix', function()
+    agent.state.active_provider = 'copilot'
+    assert.same({ 'claude', 'copilot' }, agent.complete_provider(''))
+    assert.same({ 'claude' }, agent.complete_provider('cl'))
+    assert.same({ 'copilot' }, agent.complete_provider('co'))
+  end)
+end)
+
+describe('provider defaults', function()
+  local agent
+  local model
+  local http
+  local original_sync_request
+  local sync_calls
+
+  before_each(function()
+    package.loaded['copilot_agent'] = nil
+    package.loaded['copilot_agent.config'] = nil
+    package.loaded['copilot_agent.model'] = nil
+
+    http = require('copilot_agent.http')
+    original_sync_request = http.sync_request
+    sync_calls = 0
+    http.sync_request = function(method, path, body, opts)
+      sync_calls = sync_calls + 1
+      if method == 'GET' and path == '/models' then
+        return {
+          models = {
+            { id = 'gpt-5.4-mini', name = 'GPT-5.4 Mini' },
+            { id = 'claude-sonnet-4.6', name = 'Claude Sonnet 4.6' },
+          },
+        }, nil, 200
+      end
+      return original_sync_request(method, path, body, opts)
+    end
+
+    agent = require('copilot_agent')
+    agent.setup({ auto_create_session = false, notify = false })
+    model = require('copilot_agent.model')
+  end)
+
+  after_each(function()
+    if http then
+      http.sync_request = original_sync_request
+    end
+  end)
+
+  it('prefers a Claude model when the default provider is claude', function()
+    agent.state.model_cache = {}
+    assert_eq('claude-sonnet-4.6', model.default_model_for_provider('claude'))
+    assert_eq(1, sync_calls)
+  end)
+end)
+
 describe('user commands', function()
   before_each(function()
     package.loaded['copilot_agent'] = nil
@@ -1469,6 +1532,7 @@ describe('user commands', function()
     'CopilotAgentAsk',
     'CopilotAgentMode',
     'CopilotAgentModel',
+    'CopilotAgentProvider',
     'CopilotAgentStop',
     'CopilotAgentStatus',
     'CopilotAgentLsp',
@@ -2036,6 +2100,10 @@ describe('statusline API', function()
     assert_eq('string', type(agent.statusline_model()))
   end)
 
+  it('statusline_provider returns a string', function()
+    assert_eq('string', type(agent.statusline_provider()))
+  end)
+
   it('statusline_busy returns a string', function()
     assert_eq('string', type(agent.statusline_busy()))
   end)
@@ -2066,6 +2134,14 @@ describe('statusline API', function()
     local v = agent.statusline()
     assert_eq('string', type(v))
     assert_true(#v > 0)
+  end)
+
+  it('statusline shows the active provider name', function()
+    agent.state.active_provider = 'claude'
+    agent.state.current_model = 'claude-sonnet-4.6'
+    local v = agent.statusline()
+    assert_true(v:find('claude', 1, true) ~= nil)
+    assert_true(v:find('claude-sonnet-4.6', 1, true) == nil)
   end)
 
   it('sanitizes percent signs and control bytes before writing statuslines', function()
@@ -2354,6 +2430,18 @@ describe('model state sync', function()
     assert_eq('gpt-5.3-codex', agent.state.current_model)
     assert_eq('gpt-5.3-codex', agent.state.session_models['copilot::session-123'])
     assert_eq('gpt-5.3-codex', require('copilot_agent.config').active_session_model('session-123'))
+  end)
+
+  it('does not reuse a Copilot cache entry when the default provider is claude', function()
+    agent.state.session_id = 'session-123'
+    agent.state.current_model = 'gpt-5.3-codex'
+    agent.state.config.default_provider = 'claude'
+    agent.state.session_models['copilot::session-123'] = 'gpt-5.3-codex'
+
+    assert_eq(nil, require('copilot_agent.config').active_session_model('session-123'))
+
+    agent.state.session_models['claude::session-123'] = 'claude-sonnet-4.6'
+    assert_eq('claude-sonnet-4.6', require('copilot_agent.config').active_session_model('session-123'))
   end)
 
   it('tracks assistant usage metrics and appends quota remaining to the statusline context', function()

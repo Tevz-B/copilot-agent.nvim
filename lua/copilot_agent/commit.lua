@@ -13,6 +13,9 @@ local request = http.request
 local split_lines = utils.split_lines
 local working_directory = service.working_directory
 local active_session_model = cfg.active_session_model
+local provider_request_config = cfg.provider_request_config or function()
+  return nil
+end
 
 local M = {}
 
@@ -254,7 +257,8 @@ local function request_generated_commit_message(repo_root, callback)
   end
 
   local function create_side_session(agent_name)
-    request('POST', '/sessions', {
+    local requested_model = active_session_model(state.session_id)
+    local request_body = vim.tbl_extend('force', {
       clientId = service.client_id(),
       clientName = state.config.client_name,
       -- The commit agent must run git shell commands; approve-reads would fall
@@ -263,9 +267,10 @@ local function request_generated_commit_message(repo_root, callback)
       workingDirectory = repo_root,
       streaming = state.config.session.streaming,
       enableConfigDiscovery = state.config.session.enable_config_discovery,
-      model = active_session_model(state.session_id),
+      model = requested_model,
       agent = agent_name,
-    }, function(response, err)
+    }, provider_request_config(nil, requested_model) or {})
+    request('POST', '/sessions', request_body, function(response, err)
       if err then
         if agent_name then
           create_side_session(nil)

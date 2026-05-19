@@ -15,8 +15,16 @@ local session_models_store = require('copilot_agent.session_models')
 local state = cfg.state
 local notify = cfg.notify
 local active_provider = cfg.active_provider
-local session_model_key = cfg.session_model_key
-local session_provider = cfg.session_provider
+local provider_request_config = cfg.provider_request_config
+local session_model_key = cfg.session_model_key or function(session_id)
+  if type(session_id) ~= 'string' or session_id == '' then
+    return nil
+  end
+  return session_id
+end
+local session_provider = cfg.session_provider or function()
+  return nil
+end
 
 local request = http.request
 local sync_request = http.sync_request
@@ -33,12 +41,6 @@ local append_entry = render.append_entry
 
 local M = {}
 
-local function provider_label()
-  local name = type(active_provider) == 'function' and active_provider() or nil
-  name = type(name) == 'string' and name ~= '' and name or 'provider'
-  return name:sub(1, 1):upper() .. name:sub(2)
-end
-
 local function deferred_select(items, opts, on_choice)
   -- Some vim.ui.select providers close or recycle popup windows on a short
   -- defer. Opening model pickers through the same defer window avoids guihua
@@ -50,11 +52,7 @@ local function deferred_select(items, opts, on_choice)
 end
 
 local function model_picker_label(item)
-  if type(item) ~= 'table' then
-    return tostring(item or '')
-  end
-
-  local label = item.label or item.name or item.id or ''
+  local label = item.label
   if item.supports_reasoning and #(item.supported_efforts or {}) > 0 then
     label = label .. ' 🧠'
   end
@@ -65,7 +63,33 @@ local function effort_picker_label(item)
   return item.label
 end
 
-function M.store_model_cache(models)
+local function resolved_model_provider(provider)
+  local normalized = type(provider) == 'string' and vim.trim(provider):lower() or ''
+  if normalized == '' and type(active_provider) == 'function' then
+    local current = active_provider()
+    normalized = type(current) == 'string' and vim.trim(current):lower() or ''
+  end
+  if normalized == '' then
+    normalized = 'copilot'
+  end
+  return normalized
+end
+
+local function model_request_body(provider)
+  local resolved = resolved_model_provider(provider)
+  local body = { provider = resolved }
+  return vim.tbl_extend('force', body, provider_request_config(resolved, nil) or {}), resolved
+end
+
+local function model_cache_matches_provider(provider)
+  local cached = type(state.model_cache_provider) == 'string' and vim.trim(state.model_cache_provider):lower() or ''
+  if cached == '' then
+    return false
+  end
+  return resolved_model_provider(provider) == cached
+end
+
+function M.store_model_cache(models, provider)
   local items = {}
   for _, entry in ipairs(models or {}) do
     local item = normalize_model_entry(entry)
@@ -81,7 +105,39 @@ function M.store_model_cache(models)
     return left.id < right.id
   end)
   state.model_cache = items
+  state.model_cache_provider = resolved_model_provider(provider)
   return items
+end
+
+function M.sync_fetch_models(provider)
+  local body, resolved = model_request_body(provider)
+  local response, err, status = sync_request('POST', '/models', body)
+  if err then
+    if status == 404 or status == 405 then
+      err = err .. '. The running Go host does not expose provider-aware model listing; restart it so Neovim and the service use the same build.'
+    end
+    return nil, err
+  end
+  return M.store_model_cache(response and response.models or {}, resolved), nil
+end
+
+function M.default_model_for_provider(provider)
+  local normalized = resolved_model_provider(provider)
+  if normalized ~= 'claude' then
+    return nil
+  end
+
+  if vim.tbl_isempty(state.model_cache or {}) or not model_cache_matches_provider(normalized) then
+    M.sync_fetch_models(normalized)
+  end
+
+  for _, item in ipairs(state.model_cache or {}) do
+    if type(item.id) == 'string' and item.id:lower():find('claude', 1, true) == 1 then
+      return item.id
+    end
+  end
+
+  return nil
 end
 
 function M.model_completion_items(arglead)
@@ -121,11 +177,13 @@ function M.stale_service_hint(unavailable_model)
   )
 end
 
-function M.fetch_models(callback, on_error)
-  request('GET', '/models', nil, function(response, err, status)
+function M.fetch_models(callback, on_error, opts)
+  opts = opts or {}
+  local body, resolved = model_request_body(opts.provider)
+  request('POST', '/models', body, function(response, err, status)
     if err then
-      if status == 404 then
-        err = err .. '. The running Go host does not expose /models; restart it so Neovim and the service use the same build.'
+      if status == 404 or status == 405 then
+        err = err .. '. The running Go host does not expose provider-aware model listing; restart it so Neovim and the service use the same build.'
       end
       if on_error then
         on_error(err)
@@ -134,7 +192,7 @@ function M.fetch_models(callback, on_error)
       end
       return
     end
-    callback(M.store_model_cache(response and response.models or {}), nil)
+    callback(M.store_model_cache(response and response.models or {}, resolved), nil)
   end)
 end
 
@@ -206,7 +264,7 @@ function M.apply_model(model, callback, opts)
       local um = unavailable_model_from_error(err)
       if um and opts.model_selection_attempts ~= false then
         append_entry('system', string.format('Model "%s" is unavailable; choose a supported model.', um))
-        M.prompt_supported_model_selection(um, 'Select a supported ' .. provider_label() .. ' model', function(reselected_model, prompt_err)
+        M.prompt_supported_model_selection(um, 'Select a supported Copilot model', function(reselected_model, prompt_err)
           if prompt_err then
             if callback then
               callback(nil, prompt_err)
@@ -231,8 +289,8 @@ function M.apply_model(model, callback, opts)
       local key = session_model_key(state.session_id, session_provider(state.session_id, type(active_provider) == 'function' and active_provider() or nil))
       if key then
         state.session_models[key] = active_model
+        session_models_store.set(key, active_model)
       end
-      session_models_store.set(state.session_id, active_model)
     end
     local msg = 'Active model: ' .. active_model
     if opts.reasoning_effort and opts.reasoning_effort ~= '' then
@@ -246,9 +304,7 @@ function M.apply_model(model, callback, opts)
     if callback then
       callback(active_model, nil)
     end
-  end, {
-    provider = session_provider(state.session_id, type(active_provider) == 'function' and active_provider() or nil),
-  })
+  end)
 end
 
 --- Interactive model picker with reasoning effort support.
@@ -274,7 +330,7 @@ function M.select_model(model)
     end
 
     deferred_select(models, {
-      prompt = 'Select ' .. provider_label() .. ' model',
+      prompt = 'Select Copilot model',
       format_item = model_picker_label,
     }, function(choice)
       if not choice then
@@ -327,14 +383,13 @@ end
 
 --- Tab-completion for model IDs. Fetches models synchronously on first call.
 function M.complete_model(arglead)
-  if #state.model_cache == 0 then
-    local response = select(1, sync_request('GET', '/models', nil))
-    if response and type(response.models) == 'table' then
-      M.store_model_cache(response.models)
-    elseif state.config.service.auto_start and not state.service_starting then
+  local provider = resolved_model_provider()
+  if #state.model_cache == 0 or not model_cache_matches_provider(provider) then
+    local models = M.sync_fetch_models(provider)
+    if not models and state.config.service.auto_start and not state.service_starting then
       ensure_service_running(function(err)
         if not err then
-          M.fetch_models(function() end)
+          M.fetch_models(function() end, nil, { provider = provider })
         end
       end)
     end

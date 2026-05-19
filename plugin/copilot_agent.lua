@@ -43,13 +43,14 @@ vim.api.nvim_create_user_command('CopilotAgentSwitchSession', function()
 end, { desc = 'Switch to a different Copilot session' })
 
 vim.api.nvim_create_user_command('CopilotAgentProvider', function(command)
-  copilot_agent.switch_provider(vim.trim(table.concat(command.fargs, ' ')))
+  local provider = vim.trim(command.args or '')
+  copilot_agent.switch_provider(provider ~= '' and provider or nil)
 end, {
   nargs = '?',
   complete = function(arglead)
     return copilot_agent.complete_provider(arglead)
   end,
-  desc = 'Switch active provider and attach/resume its session',
+  desc = 'Switch to a provider and attach to an existing session or create a new one',
 })
 
 vim.api.nvim_create_user_command('CopilotAgentDeleteSession', function()

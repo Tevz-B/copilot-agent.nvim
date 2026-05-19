@@ -7,6 +7,21 @@ local service = require('copilot_agent.service')
 
 local log = cfg.log
 local state = cfg.state
+local active_provider = cfg.active_provider
+local session_model_key = cfg.session_model_key
+  or function(session_id, provider)
+    if type(session_id) ~= 'string' or session_id == '' then
+      return nil
+    end
+    provider = type(provider) == 'string' and vim.trim(provider):lower() or nil
+    if provider == '' then
+      provider = nil
+    end
+    if provider then
+      return provider .. '::' .. session_id
+    end
+    return session_id
+  end
 
 local M = {}
 local deleted_checkpoint_ttl_seconds = 7 * 24 * 60 * 60
@@ -745,7 +760,10 @@ local function apply_snapshot(snapshot)
   state.session_name = snapshot.session_name
   state.current_model = snapshot.current_model
   if type(state.session_id) == 'string' and state.session_id ~= '' and type(snapshot.current_model) == 'string' and snapshot.current_model ~= '' then
-    state.session_models[state.session_id] = snapshot.current_model
+    local key = session_model_key(state.session_id, type(active_provider) == 'function' and active_provider() or nil)
+    if key then
+      state.session_models[key] = snapshot.current_model
+    end
   end
   state.reasoning_effort = snapshot.reasoning_effort
   state.input_mode = snapshot.input_mode or state.input_mode

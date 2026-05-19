@@ -11,6 +11,7 @@ Below, **Plugin** means there is a working Neovim command/keymap/UI path now. **
 | `/rename`              | **Yes**     |          No | Rename the active session in plugin-local state                                                                                            |
 | `/new`                 | **Yes**     |     **Yes** | `:CopilotAgentNewSession`                                                                                                                 |
 | `/clear`               | **Yes**     |     **Yes** | `:CopilotAgentNewSession` or `:CopilotAgentStop!` then new session                                                                        |
+| `/provider`            | **Yes**     |     **Yes** | `:CopilotAgentProvider`, `<M-P>`                                                                                                          |
 | `/compact`             | No          |          No | No equivalent; closest is starting a new session                                                                                          |
 | `/context`             | **Partial** | **Partial** | Statusline `📊current/limit`; no command UI                                                                                               |
 | `/usage`               | **Partial** | **Partial** | Same as `/context`; token usage arrives via `session.usage_info`                                                                          |

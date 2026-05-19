@@ -1083,7 +1083,7 @@ local function sync_chat_tail_spacer_lines(bufnr, desired_count)
         vim.api.nvim_buf_line_count(bufnr),
         chat_view_log_summary()
       ),
-      vim.log.levels.DEBUG
+      vim.log.levels.TRACE
     )
   end
 end
@@ -1112,7 +1112,7 @@ local function update_reasoning_overlay_now()
         #(state.reasoning_text or ''),
         #(state.reasoning_lines or {})
       ),
-      vim.log.levels.DEBUG
+      vim.log.levels.TRACE
     )
     return
   end
@@ -1133,7 +1133,7 @@ local function update_reasoning_overlay_now()
         #(state.reasoning_lines or {}),
         chat_view_log_summary()
       ),
-      vim.log.levels.DEBUG
+      vim.log.levels.TRACE
     )
     return
   end
@@ -1157,7 +1157,7 @@ local function update_reasoning_overlay_now()
         #rendered_reasoning_lines,
         chat_view_log_summary()
       ),
-      vim.log.levels.DEBUG
+      vim.log.levels.TRACE
     )
     return
   end

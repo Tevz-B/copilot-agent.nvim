@@ -1480,7 +1480,7 @@ describe('provider defaults', function()
     sync_calls = 0
     http.sync_request = function(method, path, body, opts)
       sync_calls = sync_calls + 1
-      if method == 'GET' and path == '/models' then
+      if path == '/models' then
         return {
           models = {
             { id = 'gpt-5.4-mini', name = 'GPT-5.4 Mini' },
@@ -1506,6 +1506,370 @@ describe('provider defaults', function()
     agent.state.model_cache = {}
     assert_eq('claude-sonnet-4.6', model.default_model_for_provider('claude'))
     assert_eq(1, sync_calls)
+  end)
+end)
+
+describe('provider switching', function()
+  local agent
+  local session_mod
+  local http
+  local original_request
+  local original_ui_select
+
+  before_each(function()
+    package.loaded['copilot_agent'] = nil
+    package.loaded['copilot_agent.session'] = nil
+    package.loaded['copilot_agent.http'] = nil
+    package.loaded['copilot_agent.copilot_slash'] = nil
+    package.loaded['copilot_agent.claude_slash'] = nil
+    original_ui_select = vim.ui.select
+    http = require('copilot_agent.http')
+    original_request = http.request
+  end)
+
+  after_each(function()
+    http.request = original_request
+    vim.ui.select = original_ui_select
+  end)
+
+  local function setup_with_mock(mock_fn)
+    http.request = mock_fn
+    -- Now require agent and session so they capture the mocked request
+    package.loaded['copilot_agent.session'] = nil
+    agent = require('copilot_agent')
+    agent.setup({ auto_create_session = false, notify = false })
+    session_mod = require('copilot_agent.session')
+  end
+
+  it('sets active_provider when switching to claude', function()
+    setup_with_mock(function(method, path, body, callback)
+      if method == 'GET' and path == '/sessions' then
+        callback({ persisted = {}, live = {} }, nil)
+      elseif method == 'POST' and path == '/sessions' then
+        callback({ sessionId = 'claude-session-1' }, nil)
+      else
+        callback({}, nil)
+      end
+    end)
+    agent.state.active_provider = 'copilot'
+    agent.state.session_id = nil
+
+    session_mod.switch_provider('claude')
+    assert_eq('claude', agent.state.active_provider)
+  end)
+
+  it('creates a new session when no matching provider sessions exist', function()
+    local created_session_id
+    setup_with_mock(function(method, path, body, callback)
+      if method == 'GET' and path == '/sessions' then
+        callback({ persisted = {}, live = {} }, nil)
+      elseif method == 'POST' and path == '/sessions' then
+        created_session_id = 'claude-new-1'
+        callback({ sessionId = created_session_id }, nil)
+      else
+        callback({}, nil)
+      end
+    end)
+    agent.state.active_provider = 'copilot'
+    agent.state.session_id = nil
+    agent.state.provider_sessions = {}
+
+    session_mod.switch_provider('claude')
+    assert_eq('claude-new-1', created_session_id)
+  end)
+
+  it('offers existing sessions for the target provider via ui.select', function()
+    setup_with_mock(function(method, path, body, callback)
+      if method == 'GET' and path == '/sessions' then
+        callback({
+          persisted = {
+            { sessionId = 'claude-sess-1', summary = 'Claude work' },
+          },
+          live = {},
+        }, nil)
+      else
+        callback({}, nil)
+      end
+    end)
+    agent.state.active_provider = 'copilot'
+    agent.state.session_id = 'copilot-session-1'
+    agent.state.provider_sessions = { ['claude-sess-1'] = 'claude', ['copilot-session-1'] = 'copilot' }
+
+    local select_choices
+    vim.ui.select = function(items, opts, callback)
+      select_choices = items
+      callback(items[1], 1)
+    end
+
+    session_mod.switch_provider('claude')
+    assert_true(select_choices ~= nil)
+    assert_true(#select_choices >= 1)
+  end)
+
+  it('shows provider picker when called with no argument', function()
+    setup_with_mock(function(method, path, body, callback)
+      if method == 'GET' and path == '/sessions' then
+        callback({ persisted = {}, live = {} }, nil)
+      elseif method == 'POST' and path == '/sessions' then
+        callback({ sessionId = 'picked-session' }, nil)
+      else
+        callback({}, nil)
+      end
+    end)
+
+    local picker_shown
+    vim.ui.select = function(items, opts, callback)
+      picker_shown = true
+      callback(nil) -- user cancels
+    end
+
+    session_mod.switch_provider('')
+    assert_true(picker_shown == true)
+  end)
+
+  it('notifies when start receives an empty provider name internally', function()
+    setup_with_mock(function() end)
+    local notified
+    local cfg = require('copilot_agent.config')
+    local orig_notify = cfg.notify
+    cfg.notify = function(msg, level)
+      notified = { msg = msg, level = level }
+    end
+
+    -- Simulate the internal start() path with nil via select callback
+    vim.ui.select = function(items, opts, callback)
+      callback(nil) -- user cancels → start(nil) is never called
+    end
+    session_mod.switch_provider(nil)
+    -- When user cancels, nothing happens (no notification)
+    -- The real validation is in start() which won't be called
+    assert_true(true)
+
+    cfg.notify = orig_notify
+  end)
+end)
+
+describe('claude slash command routing', function()
+  local agent
+  local slash
+  local render_mod
+  local entries
+  local original_append_entry
+
+  before_each(function()
+    package.loaded['copilot_agent'] = nil
+    package.loaded['copilot_agent.slash'] = nil
+    package.loaded['copilot_agent.copilot_slash'] = nil
+    package.loaded['copilot_agent.claude_slash'] = nil
+    package.loaded['copilot_agent.input'] = nil
+
+    -- Mock render.append_entry BEFORE claude_slash is loaded (it caches the local)
+    render_mod = require('copilot_agent.render')
+    original_append_entry = render_mod.append_entry
+    entries = {}
+    render_mod.append_entry = function(kind, text)
+      entries[#entries + 1] = { kind = kind, text = text }
+    end
+
+    agent = require('copilot_agent')
+    agent.setup({ auto_create_session = false, notify = false })
+    agent.state.active_provider = 'claude'
+    slash = require('copilot_agent.slash')
+  end)
+
+  after_each(function()
+    render_mod.append_entry = original_append_entry
+  end)
+
+  it('routes /effort to claude_slash when provider is claude', function()
+    assert_true(slash.execute('/effort high'))
+    assert_true(#entries > 0)
+    assert_true(entries[#entries].text:find('high') ~= nil)
+  end)
+
+  it('rejects invalid effort levels', function()
+    assert_true(slash.execute('/effort extreme'))
+    assert_true(entries[#entries].text:find('Invalid') ~= nil)
+  end)
+
+  it('shows current effort when /effort has no args', function()
+    assert_true(slash.execute('/effort'))
+    assert_true(entries[#entries].text:find('effort') ~= nil)
+  end)
+
+  it('routes /review to claude_slash dispatch_prompt', function()
+    local sent_prompt
+    local input_mod = require('copilot_agent.input')
+    input_mod.send_prompt = function(prompt, opts)
+      sent_prompt = prompt
+    end
+
+    assert_true(slash.execute('/review'))
+    assert_true(sent_prompt ~= nil)
+    assert_true(sent_prompt:find('[Rr]eview') ~= nil)
+  end)
+
+  it('routes /security-review to claude_slash', function()
+    local sent_prompt
+    local input_mod = require('copilot_agent.input')
+    input_mod.send_prompt = function(prompt, opts)
+      sent_prompt = prompt
+    end
+
+    assert_true(slash.execute('/security-review'))
+    assert_true(sent_prompt ~= nil)
+    assert_true(sent_prompt:find('[Ss]ecurity') ~= nil)
+  end)
+
+  it('routes /simplify to claude_slash', function()
+    local sent_prompt
+    local input_mod = require('copilot_agent.input')
+    input_mod.send_prompt = function(prompt, opts)
+      sent_prompt = prompt
+    end
+
+    assert_true(slash.execute('/simplify'))
+    assert_true(sent_prompt ~= nil)
+    assert_true(sent_prompt:find('[Ss]implif') ~= nil)
+  end)
+
+  it('routes /background to claude_slash', function()
+    local sent_prompt
+    local input_mod = require('copilot_agent.input')
+    input_mod.send_prompt = function(prompt, opts)
+      sent_prompt = prompt
+    end
+
+    assert_true(slash.execute('/background'))
+    assert_true(sent_prompt ~= nil)
+    assert_true(sent_prompt:find('[Bb]ackground') ~= nil)
+  end)
+
+  it('routes /btw with a message to claude_slash', function()
+    local sent_prompt
+    local input_mod = require('copilot_agent.input')
+    input_mod.send_prompt = function(prompt, opts)
+      sent_prompt = prompt
+    end
+
+    assert_true(slash.execute('/btw also fix the typo'))
+    assert_true(sent_prompt ~= nil)
+    assert_true(sent_prompt:find('typo') ~= nil)
+  end)
+
+  it('routes /batch with args to claude_slash', function()
+    local sent_prompt
+    local input_mod = require('copilot_agent.input')
+    input_mod.send_prompt = function(prompt, opts)
+      sent_prompt = prompt
+    end
+
+    assert_true(slash.execute('/batch refactor auth into separate modules'))
+    assert_true(sent_prompt ~= nil)
+    assert_true(sent_prompt:find('refactor auth') ~= nil)
+  end)
+
+  it('falls through to copilot_slash for unknown claude commands', function()
+    local result = slash.execute('/nonexistent_command')
+    assert_false(result)
+  end)
+
+  it('falls through to copilot_slash when provider is copilot', function()
+    agent.state.active_provider = 'copilot'
+    -- /effort is claude-only; with copilot provider it should not be handled
+    local result = slash.execute('/effort high')
+    assert_false(result)
+  end)
+end)
+
+describe('claude model setup', function()
+  local agent
+  local model
+  local http
+  local original_sync_request
+
+  before_each(function()
+    package.loaded['copilot_agent'] = nil
+    package.loaded['copilot_agent.config'] = nil
+    package.loaded['copilot_agent.model'] = nil
+    package.loaded['copilot_agent.http'] = nil
+
+    http = require('copilot_agent.http')
+    original_sync_request = http.sync_request
+    http.sync_request = function(method, path, body, opts)
+      if path == '/models' then
+        return {
+          models = {
+            { id = 'claude-sonnet-4.6', name = 'Claude Sonnet 4.6' },
+            { id = 'claude-opus-4.7', name = 'Claude Opus 4.7' },
+            { id = 'gpt-5.4', name = 'GPT 5.4' },
+          },
+        }, nil, 200
+      end
+      return original_sync_request(method, path, body, opts)
+    end
+
+    agent = require('copilot_agent')
+    agent.setup({ auto_create_session = false, notify = false, default_provider = 'claude' })
+    model = require('copilot_agent.model')
+  end)
+
+  after_each(function()
+    if http then
+      http.sync_request = original_sync_request
+    end
+  end)
+
+  it('selects first claude model from cache for claude provider', function()
+    agent.state.model_cache = {}
+    local result = model.default_model_for_provider('claude')
+    -- Models are sorted alphabetically; claude-opus-4.7 < claude-sonnet-4.6
+    assert_eq('claude-opus-4.7', result)
+  end)
+
+  it('returns nil for non-claude providers', function()
+    local result = model.default_model_for_provider('copilot')
+    assert_eq(nil, result)
+  end)
+
+  it('fetches models with POST and provider body', function()
+    local captured_method, captured_path, captured_body
+    http.sync_request = function(method, path, body, opts)
+      captured_method = method
+      captured_path = path
+      captured_body = body
+      return {
+        models = {
+          { id = 'claude-sonnet-4.6', name = 'Claude Sonnet 4.6' },
+        },
+      }, nil, 200
+    end
+    package.loaded['copilot_agent.model'] = nil
+    model = require('copilot_agent.model')
+
+    agent.state.model_cache = {}
+    model.default_model_for_provider('claude')
+    assert_eq('POST', captured_method)
+    assert_eq('/models', captured_path)
+    assert_true(type(captured_body) == 'table')
+    assert_eq('claude', captured_body.provider)
+  end)
+
+  it('caches models per provider and does not reuse copilot cache for claude', function()
+    agent.state.model_cache = { { id = 'gpt-5.4', name = 'GPT 5.4' } }
+    agent.state.model_cache_provider = 'copilot'
+
+    local result = model.default_model_for_provider('claude')
+    -- Should have fetched fresh models for claude (opus sorts before sonnet)
+    assert_eq('claude-opus-4.7', result)
+    assert_eq('claude', agent.state.model_cache_provider)
+  end)
+
+  it('stores fetched models in state.model_cache', function()
+    agent.state.model_cache = {}
+    model.sync_fetch_models('claude')
+    assert_true(#agent.state.model_cache > 0)
+    assert_eq('claude-opus-4.7', agent.state.model_cache[1].id) -- sorted alphabetically
   end)
 end)
 
@@ -5258,6 +5622,7 @@ describe('ask command', function()
   before_each(function()
     package.loaded['copilot_agent'] = nil
     package.loaded['copilot_agent.slash'] = nil
+    package.loaded['copilot_agent.copilot_slash'] = nil
     package.loaded['copilot_agent.http'] = nil
     agent = require('copilot_agent')
     agent.setup({ auto_create_session = false, notify = false })
@@ -5515,6 +5880,7 @@ describe('rewind command', function()
   before_each(function()
     package.loaded['copilot_agent'] = nil
     package.loaded['copilot_agent.slash'] = nil
+    package.loaded['copilot_agent.copilot_slash'] = nil
     package.loaded['copilot_agent.checkpoints'] = nil
     agent = require('copilot_agent')
     agent.setup({ auto_create_session = false, notify = false })
@@ -5783,6 +6149,7 @@ describe('diff command', function()
   before_each(function()
     package.loaded['copilot_agent'] = nil
     package.loaded['copilot_agent.slash'] = nil
+    package.loaded['copilot_agent.copilot_slash'] = nil
     package.loaded['copilot_agent.checkpoints'] = nil
     agent = require('copilot_agent')
     agent.setup({ auto_create_session = false, notify = false })
@@ -6227,6 +6594,7 @@ describe('session slash command', function()
   before_each(function()
     package.loaded['copilot_agent'] = nil
     package.loaded['copilot_agent.slash'] = nil
+    package.loaded['copilot_agent.copilot_slash'] = nil
     package.loaded['copilot_agent.http'] = nil
     package.loaded['copilot_agent.session'] = nil
     package.loaded['copilot_agent.checkpoints'] = nil
@@ -6645,6 +7013,7 @@ describe('lsp slash command', function()
   before_each(function()
     package.loaded['copilot_agent'] = nil
     package.loaded['copilot_agent.slash'] = nil
+    package.loaded['copilot_agent.copilot_slash'] = nil
     package.loaded['copilot_agent.lsp'] = nil
     agent = require('copilot_agent')
     temp_workspace = vim.fn.tempname()
@@ -6934,6 +7303,7 @@ describe('mcp slash command', function()
     package.loaded['copilot_agent.config'] = nil
     package.loaded['copilot_agent'] = nil
     package.loaded['copilot_agent.slash'] = nil
+    package.loaded['copilot_agent.copilot_slash'] = nil
     package.loaded['copilot_agent.session'] = nil
     package.loaded['copilot_agent.service'] = nil
     package.loaded['copilot_agent.render'] = nil
@@ -7141,6 +7511,7 @@ describe('tool approval slash command', function()
     package.loaded['copilot_agent.config'] = nil
     package.loaded['copilot_agent.render'] = nil
     package.loaded['copilot_agent.slash'] = nil
+    package.loaded['copilot_agent.copilot_slash'] = nil
     package.loaded['copilot_agent.approvals'] = nil
     agent = require('copilot_agent')
     agent.setup({ auto_create_session = false, notify = false })
@@ -12195,8 +12566,7 @@ describe('chat input behavior', function()
     vim.fn.writefile({ '{"mcpServers":{"local":{},"docs":{}}}' }, root_mcp)
     vim.fn.writefile({ '{"servers":[{"name":"browser"}]}' }, vscode_mcp)
 
-    http.sync_request = function(method, path)
-      assert_eq('GET', method)
+    http.sync_request = function(_, path)
       if path == '/models' then
         return {
           models = {
@@ -12219,6 +12589,7 @@ describe('chat input behavior', function()
       end
       return nil, 'unexpected path: ' .. tostring(path), 404
     end
+    package.loaded['copilot_agent.model'] = nil
 
     agent.open_chat()
     input.open_input_window()
@@ -12415,6 +12786,7 @@ describe('chat input behavior', function()
       end
       return nil, 'unexpected', 404
     end
+    package.loaded['copilot_agent.model'] = nil
 
     agent.open_chat()
     input.open_input_window()

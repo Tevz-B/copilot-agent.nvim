@@ -302,22 +302,22 @@ local state = {
     -- Slots are created lazily by provider_state(); seed common providers so
     -- they are always present after init.lua calls M.reset().
     copilot = {
-      current_model         = nil,
+      current_model = nil,
       pending_session_model = nil,
-      session_models        = {},
-      input_mode            = 'agent',  -- 'ask' | 'plan' | 'agent' | 'test' | 'autopilot'
-      reasoning_effort      = nil,      -- nil = model default
-      permission_mode       = 'interactive', -- 'interactive' | 'approve-all' | 'autopilot'
-      provider_sessions     = {},       -- session_id -> provider name
+      session_models = {},
+      input_mode = 'agent', -- 'ask' | 'plan' | 'agent' | 'test' | 'autopilot'
+      reasoning_effort = nil, -- nil = model default
+      permission_mode = 'interactive', -- 'interactive' | 'approve-all' | 'autopilot'
+      provider_sessions = {}, -- session_id -> provider name
     },
     claude = {
-      current_model         = nil,
+      current_model = nil,
       pending_session_model = nil,
-      session_models        = {},
-      input_mode            = 'agent',  -- 'ask' | 'plan' | 'agent' | 'auto'
-      reasoning_effort      = nil,
-      permission_mode       = 'interactive',
-      provider_sessions     = {},
+      session_models = {},
+      input_mode = 'agent', -- 'ask' | 'plan' | 'agent' | 'auto'
+      reasoning_effort = nil,
+      permission_mode = 'interactive',
+      provider_sessions = {},
     },
   },
 }
@@ -338,7 +338,13 @@ local state = {
 -- { word = '/logout', info = 'Log out of an OAuth login session' },
 -- { word = '/restart', info = 'Restart the CLI, preserving current session' },
 -- { word = '/user', info = 'Manage GitHub user list' },
+--- Slash commands available in the input completion menu.
+--- Each entry may have an optional `providers` field:
+---   - nil        → available for all providers
+---   - {'claude'} → Claude-only
+---   - {'copilot'}→ Copilot-only
 local SLASH_COMMANDS = {
+  -- Universal commands (no providers field)
   { word = '/help', info = 'Show help for interactive commands' },
   { word = '/model', info = 'Select AI model to use' },
   { word = '/resume', info = 'Switch to a different session' },
@@ -354,7 +360,7 @@ local SLASH_COMMANDS = {
   { word = '/lsp', info = 'Bootstrap or inspect project language server config' },
   { word = '/plan', info = 'Create an implementation plan' },
   { word = '/research', info = 'Run deep research investigation' },
-  { word = '/init', info = 'Initialize Copilot instructions for this repository' },
+  { word = '/init', info = 'Initialize instructions/claude for this repository' },
   { word = '/agent', info = 'Browse and select available agents' },
   { word = '/skills', info = 'Manage skills for enhanced capabilities' },
   { word = '/mcp', info = 'Manage MCP server configuration' },
@@ -377,6 +383,19 @@ local SLASH_COMMANDS = {
   { word = '/experimental', info = 'Show/enable/disable experimental features' },
   { word = '/instructions', info = 'View and toggle custom instruction files' },
   { word = '/exit', info = 'Exit the CLI' },
+  -- Claude-only commands
+  { word = '/effort', info = 'Adjust reasoning effort level', providers = { 'claude' } },
+  { word = '/memory', info = 'Manage Claude memory and CLAUDE.md', providers = { 'claude' } },
+  { word = '/permissions', info = 'View and manage tool permissions', providers = { 'claude' } },
+  { word = '/background', info = 'Run a task in the background', providers = { 'claude' } },
+  { word = '/agents', info = 'List active background agents', providers = { 'claude' } },
+  { word = '/batch', info = 'Run batch operations', providers = { 'claude' } },
+  { word = '/doctor', info = 'Diagnose configuration issues', providers = { 'claude' } },
+  { word = '/debug', info = 'Toggle debug mode', providers = { 'claude' } },
+  { word = '/feedback', info = 'Send feedback', providers = { 'claude' } },
+  { word = '/btw', info = 'Inject a side note into the conversation', providers = { 'claude' } },
+  { word = '/security-review', info = 'Run security-focused code review', providers = { 'claude' } },
+  { word = '/simplify', info = 'Simplify complex code', providers = { 'claude' } },
 }
 
 local function normalize_base_url(url)
@@ -542,9 +561,7 @@ local function provider_state(name)
   if not pname then
     -- active_provider() is defined later; read the raw field to avoid a
     -- forward-reference loop.
-    pname = normalize_provider(state.active_provider)
-      or normalize_provider(state.config and state.config.default_provider)
-      or 'copilot'
+    pname = normalize_provider(state.active_provider) or normalize_provider(state.config and state.config.default_provider) or 'copilot'
   end
 
   if type(state.providers) ~= 'table' then
@@ -553,13 +570,13 @@ local function provider_state(name)
   if type(state.providers[pname]) ~= 'table' then
     -- Lazily create a fresh slot for an unknown provider.
     state.providers[pname] = {
-      current_model         = nil,
+      current_model = nil,
       pending_session_model = nil,
-      session_models        = {},
-      input_mode            = 'agent',
-      reasoning_effort      = nil,
-      permission_mode       = 'interactive',
-      provider_sessions     = {},
+      session_models = {},
+      input_mode = 'agent',
+      reasoning_effort = nil,
+      permission_mode = 'interactive',
+      provider_sessions = {},
     }
   end
 
@@ -613,11 +630,16 @@ local function set_provider_state(name, field, value)
   -- TODO(migration): Mirror writes back onto the legacy flat field so code
   -- that has not yet been migrated still sees the change.  Remove this block
   -- together with the flat fields once migration is complete.
-  if field == 'current_model' then state.current_model = value
-  elseif field == 'pending_session_model' then state.pending_session_model = value
-  elseif field == 'input_mode' then state.input_mode = value
-  elseif field == 'reasoning_effort' then state.reasoning_effort = value
-  elseif field == 'permission_mode' then state.permission_mode = value
+  if field == 'current_model' then
+    state.current_model = value
+  elseif field == 'pending_session_model' then
+    state.pending_session_model = value
+  elseif field == 'input_mode' then
+    state.input_mode = value
+  elseif field == 'reasoning_effort' then
+    state.reasoning_effort = value
+  elseif field == 'permission_mode' then
+    state.permission_mode = value
   end
 end
 
@@ -668,10 +690,7 @@ local function provider_request_config(provider, model)
     providerApiKey = provider_env_value('ANTHROPIC_API_KEY'),
     providerBearerToken = provider_env_value('ANTHROPIC_BEARER_TOKEN'),
   }
-  if request_config.providerBaseUrl == nil
-    and request_config.providerApiKey == nil
-    and request_config.providerBearerToken == nil
-  then
+  if request_config.providerBaseUrl == nil and request_config.providerApiKey == nil and request_config.providerBearerToken == nil then
     return nil
   end
   return request_config

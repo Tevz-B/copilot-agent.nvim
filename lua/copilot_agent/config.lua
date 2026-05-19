@@ -743,4 +743,6 @@ return {
   session_provider = session_provider,
   session_model_key = session_model_key,
   provider_key = normalize_provider,
+  provider_state = provider_state,
+  set_provider_state = set_provider_state,
 }

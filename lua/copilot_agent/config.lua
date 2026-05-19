@@ -423,12 +423,6 @@ end
 
 local function active_session_model(session_id, provider)
   local active_session_id = type(session_id) == 'string' and session_id or state.session_id
-  if type(active_session_id) ~= 'string' or active_session_id == '' then
-    if type(state.pending_session_model) == 'string' and state.pending_session_model ~= '' then
-      return state.pending_session_model
-    end
-    return nil
-  end
 
   local normalized_provider = type(provider) == 'string' and vim.trim(provider):lower() or nil
   if normalized_provider == '' then
@@ -447,8 +441,43 @@ local function active_session_model(session_id, provider)
     normalized_provider = 'copilot'
   end
 
+  -- No active session yet: return the pending model from the provider slot.
+  if type(active_session_id) ~= 'string' or active_session_id == '' then
+    -- Check provider-scoped pending model first.
+    -- NOTE: provider_state() is defined below normalize_provider(), but
+    -- active_session_model() is only *called* at runtime so the forward
+    -- reference is safe.
+    local pslot = type(state.providers) == 'table' and state.providers[normalized_provider]
+    if type(pslot) == 'table' and type(pslot.pending_session_model) == 'string' and pslot.pending_session_model ~= '' then
+      return pslot.pending_session_model
+    end
+    -- TODO(migration): Fallback to legacy flat pending_session_model.
+    if type(state.pending_session_model) == 'string' and state.pending_session_model ~= '' then
+      return state.pending_session_model
+    end
+    return nil
+  end
+
   local key = session_model_key(active_session_id, normalized_provider)
   if type(active_session_id) == 'string' and active_session_id ~= '' then
+    -- Check provider-scoped session_models first.
+    local pslot = type(state.providers) == 'table' and state.providers[normalized_provider]
+    if type(pslot) == 'table' and type(pslot.session_models) == 'table' then
+      local model = key and pslot.session_models[key] or nil
+      if model_matches_provider(model, normalized_provider) then
+        return model
+      end
+      local legacy_model = pslot.session_models[active_session_id]
+      if model_matches_provider(legacy_model, normalized_provider) then
+        return legacy_model
+      end
+      -- current_model from the provider slot.
+      if active_session_id == state.session_id and model_matches_provider(pslot.current_model, normalized_provider) then
+        return pslot.current_model
+      end
+    end
+    -- TODO(migration): Fallback to legacy flat session_models / current_model.
+    -- Remove once provider-scoped slot is the sole source of truth.
     local models = state.session_models
     if type(models) == 'table' then
       local model = key and models[key] or nil
@@ -654,16 +683,38 @@ local function bind_session_provider(session_id, provider)
   if session_id == '' or not normalized then
     return nil
   end
-  state.provider_sessions[session_id] = normalized
+  -- Write into the provider-scoped slot.
+  local slot = provider_state(normalized)
+  slot.provider_sessions[session_id] = normalized
+  -- TODO(migration): Also write to the legacy flat table so code that reads
+  -- state.provider_sessions directly still sees this entry.  Remove once all
+  -- call-sites use session_provider() / provider_state().
+  if type(state.provider_sessions) == 'table' then
+    state.provider_sessions[session_id] = normalized
+  end
   return normalized
 end
 
 local function session_provider(session_id, fallback_provider)
   session_id = type(session_id) == 'string' and vim.trim(session_id) or ''
   if session_id ~= '' then
-    local mapped = state.provider_sessions[session_id]
-    if type(mapped) == 'string' and mapped ~= '' then
-      return mapped
+    -- Prefer the provider-scoped lookup; try every known provider slot first.
+    if type(state.providers) == 'table' then
+      for pname, slot in pairs(state.providers) do
+        if type(slot) == 'table' and type(slot.provider_sessions) == 'table' then
+          local mapped = slot.provider_sessions[session_id]
+          if type(mapped) == 'string' and mapped ~= '' then
+            return mapped
+          end
+        end
+      end
+    end
+    -- TODO(migration): Fallback to legacy flat provider_sessions table.
+    -- Remove this block once bind_session_provider has been the sole writer
+    -- long enough that no legacy entries remain.
+    local legacy = type(state.provider_sessions) == 'table' and state.provider_sessions[session_id] or nil
+    if type(legacy) == 'string' and legacy ~= '' then
+      return legacy
     end
   end
   local normalized_fallback = normalize_provider(fallback_provider)

@@ -1914,10 +1914,75 @@ local function restore_completeopt(bufnr)
   runtime.saved_completeopt = nil
 end
 
+local cmp_source_registered = false
+
+-- Attach nvim-cmp (when requested/available) to this buffer as the sole
+-- completion source, isolated from the user's regular lsp/buffer/path
+-- sources so the popup only ever shows our slash commands / attachments.
+-- Returns true when cmp now owns completion for this buffer.
+local function try_setup_cmp(bufnr)
+  local engine = (state.config.chat or {}).completion_engine or 'auto'
+  if engine == 'native' then
+    return false
+  end
+
+  local ok_cmp, cmp = pcall(require, 'cmp')
+  if not ok_cmp then
+    if engine == 'cmp' then
+      require('copilot_agent.log').log(
+        'chat.completion_engine = "cmp" requested but nvim-cmp is not installed; falling back to native completion',
+        vim.log.levels.WARN
+      )
+    end
+    return false
+  end
+
+  if not cmp_source_registered then
+    local ok_src, source_mod = pcall(require, 'copilot_agent.cmp_source')
+    if not ok_src then
+      require('copilot_agent.log').log('failed to load copilot_agent.cmp_source: ' .. tostring(source_mod), vim.log.levels.WARN)
+      return false
+    end
+    cmp.register_source('copilot_agent', source_mod.new())
+    cmp_source_registered = true
+  end
+
+  -- cmp.setup.buffer() always targets vim.api.nvim_get_current_buf(); use
+  -- nvim_buf_call so this works regardless of whether bufnr is already the
+  -- current buffer/window at this point in buffer setup.
+  vim.api.nvim_buf_call(bufnr, function()
+    cmp.setup.buffer({
+      sources = cmp.config.sources({ { name = 'copilot_agent' } }),
+      completion = { completeopt = 'menu,menuone,noselect' },
+    })
+  end)
+
+  vim.keymap.set('i', '<Tab>', function()
+    if cmp.visible() then
+      cmp.confirm({ select = true })
+    else
+      cmp.complete()
+    end
+  end, {
+    buffer = bufnr,
+    silent = true,
+    desc = 'Trigger or accept nvim-cmp completion',
+  })
+
+  return true
+end
+
 local function setup_completion_keymaps(bufnr)
   vim.bo[bufnr].omnifunc = ''
   vim.bo[bufnr].completefunc = "v:lua.require'copilot_agent'.input_completefunc"
   publish_input_completefunc()
+
+  if try_setup_cmp(bufnr) then
+    -- nvim-cmp now owns the popup/mappings for this buffer; the native
+    -- ins-completion machinery below (completeopt juggling, auto-trigger
+    -- autocmds, manual vim.fn.complete() calls) must stay out of the way.
+    return
+  end
 
   local runtime = completion_runtime[bufnr] or {}
   completion_runtime[bufnr] = runtime

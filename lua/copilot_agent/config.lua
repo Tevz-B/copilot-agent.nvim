@@ -111,6 +111,14 @@ local defaults = {
     -- exit messages and stream races. Falls back to builtin float if command not found.
     -- Set to false to always use the builtin floating diff window.
     diff_cmd = { 'delta' },
+    -- Completion engine used for slash commands (/model, /help, ...) and
+    -- @-attachments in the chat input buffer.
+    -- 'auto'   = use nvim-cmp when it's installed, otherwise Vim's built-in
+    --            ins-completion popup (default).
+    -- 'cmp'    = always use nvim-cmp (falls back to native with a warning
+    --            if nvim-cmp isn't installed).
+    -- 'native' = always use Vim's built-in ins-completion popup.
+    completion_engine = 'auto',
   },
   dashboard = {
     auto_open = true,

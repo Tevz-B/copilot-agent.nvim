@@ -1877,6 +1877,43 @@ local function publish_input_completefunc()
   M._input_omnifunc = input_completefunc
 end
 
+-- 'completeopt' is a global-only option, so we can't scope it to this buffer
+-- directly. Without "noselect" the built-in popup menu pre-selects and
+-- inserts the first candidate (e.g. "/help") into the buffer; any further
+-- typing is then appended to that inserted text instead of narrowing the
+-- match (e.g. typing "/m" turns into "/helpm"). We save/restore the user's
+-- original 'completeopt' around this buffer's insert-mode lifetime so our
+-- popup always requires an explicit selection.
+local function ensure_noselect_completeopt(bufnr)
+  local runtime = completion_runtime[bufnr] or {}
+  completion_runtime[bufnr] = runtime
+  if runtime.saved_completeopt ~= nil then
+    return
+  end
+  runtime.saved_completeopt = vim.o.completeopt
+  local opts = vim.split(runtime.saved_completeopt, ',', { plain = true, trimempty = true })
+  local has = {}
+  for _, opt in ipairs(opts) do
+    has[opt] = true
+  end
+  if not has.noselect then
+    table.insert(opts, 'noselect')
+  end
+  if not has.menuone then
+    table.insert(opts, 'menuone')
+  end
+  vim.o.completeopt = table.concat(opts, ',')
+end
+
+local function restore_completeopt(bufnr)
+  local runtime = completion_runtime[bufnr]
+  if not runtime or runtime.saved_completeopt == nil then
+    return
+  end
+  vim.o.completeopt = runtime.saved_completeopt
+  runtime.saved_completeopt = nil
+end
+
 local function setup_completion_keymaps(bufnr)
   vim.bo[bufnr].omnifunc = ''
   vim.bo[bufnr].completefunc = "v:lua.require'copilot_agent'.input_completefunc"
@@ -1887,6 +1924,22 @@ local function setup_completion_keymaps(bufnr)
   runtime.active_completion_key = nil
   runtime.last_auto_completion_key = nil
   runtime.auto_completion_scheduled = false
+
+  vim.api.nvim_create_autocmd('InsertEnter', {
+    buffer = bufnr,
+    callback = function()
+      ensure_noselect_completeopt(bufnr)
+    end,
+  })
+  vim.api.nvim_create_autocmd({ 'InsertLeave', 'BufLeave', 'BufWipeout' }, {
+    buffer = bufnr,
+    callback = function()
+      restore_completeopt(bufnr)
+    end,
+  })
+  if vim.fn.mode():sub(1, 1) == 'i' and vim.api.nvim_get_current_buf() == bufnr then
+    ensure_noselect_completeopt(bufnr)
+  end
 
   local function trigger_completion(opts)
     opts = opts or {}

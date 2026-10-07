@@ -32,3 +32,5 @@ require (
 )
 
 tool github.com/github/copilot-sdk/go/cmd/bundler
+
+replace github.com/github/copilot-sdk/go => ./vendor-patch/copilot-sdk-go
